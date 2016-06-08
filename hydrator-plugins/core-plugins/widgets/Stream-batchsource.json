@@ -1,0 +1,79 @@
+{
+  "metadata": {
+    "spec-version": "1.0"
+  },
+  "configuration-groups": [
+    {
+      "label": "Stream Configuration",
+      "properties": [
+        {
+          "widget-type": "stream-selector",
+          "label": "Stream Name",
+          "name": "name"
+        },
+        {
+          "widget-type": "textbox",
+          "label": "Duration",
+          "name": "duration"
+        },
+        {
+          "widget-type": "textbox",
+          "label": "Delay",
+          "name": "delay"
+        },
+        {
+          "widget-type": "textbox",
+          "label": "Data Field Name",
+          "name": "body.field"
+        },
+        {
+          "widget-type": "textbox",
+          "label": "Header Field Name",
+          "name": "headers.field"
+        }
+      ]
+    },
+    {
+      "label": "Format",
+      "properties": [
+        {
+          "widget-type": "select",
+          "label": "Format",
+          "name": "format",
+          "widget-attributes": {
+            "values": [
+              "avro",
+              "clf",
+              "csv",
+              "grok",
+              "syslog",
+              "text",
+              "tsv"
+            ],
+            "default": "text"
+          }
+        }
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "name": "schema",
+      "widget-type": "schema",
+      "widget-attributes": {
+        "schema-types": [
+          "boolean",
+          "bytes",
+          "int",
+          "long",
+          "float",
+          "double",
+          "string",
+          "map<string, string>"
+        ],
+        "schema-default-type": "string",
+        "property-watch": "format"
+      }
+    }
+  ]
+}

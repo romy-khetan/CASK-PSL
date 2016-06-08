@@ -1,0 +1,40 @@
+{
+  "metadata": {
+    "spec-version": "1.0"
+  },
+  "configuration-groups": [
+    {
+      "label": "Compressor",
+      "properties": [
+        {
+          "widget-type": "keyvalue-dropdown",
+          "label": "Compress Fields",
+          "name": "compressor",
+          "widget-attributes": {
+            "showDelimiter": "false",
+            "dropdownOptions": [
+              "SNAPPY",
+              "ZIP",
+              "GZIP",
+              "NONE"
+            ],
+            "key-placeholder": "Field Name"
+          }
+        }
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "name": "schema",
+      "label": "schema",
+      "widget-type": "schema",
+      "widget-attributes": {
+        "schema-types": [
+          "bytes"
+        ],
+        "schema-default-type": "bytes"
+      }
+    }
+  ]
+}

@@ -1,0 +1,93 @@
+{
+  "metadata": {
+    "spec-version": "1.0"
+  },
+  "configuration-groups": [
+    {
+      "label": "Kafka Configuration",
+      "properties": [
+        {
+          "widget-type": "textbox",
+          "label": "Reference Name",
+          "name": "referenceName"
+        },
+        {
+          "widget-type": "textbox",
+          "label": "ZooKeeper Quorum",
+          "name": "kafka.zookeeper"
+        },
+        {
+          "widget-type": "csv",
+          "label": "Kafka Brokers",
+          "name": "kafka.brokers",
+          "widget-attributes": {
+            "delimiter": ","
+          }
+        },
+        {
+          "widget-type": "textbox",
+          "label": "Number of Partitions",
+          "name": "kafka.partitions",
+          "widget-attributes": {
+            "default": "1"
+          }
+        },
+        {
+          "widget-type": "textbox",
+          "label": "Topic",
+          "name": "kafka.topic"
+        },
+        {
+          "widget-type": "textbox",
+          "label": "Start Offset",
+          "name": "kafka.initial.offset",
+          "widget-attributes": {
+            "default": "0"
+          }
+        }
+      ]
+    },
+    {
+      "label": "Format",
+      "properties": [
+        {
+          "widget-type": "select",
+          "label": "Format",
+          "name": "format",
+          "widget-attributes": {
+            "values": [
+              "avro",
+              "clf",
+              "csv",
+              "grok",
+              "syslog",
+              "text",
+              "tsv"
+            ],
+            "default": "text"
+          }
+        }
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "name": "schema",
+      "widget-type": "schema",
+      "widget-attributes": {
+        "schema-types": [
+          "boolean",
+          "int",
+          "long",
+          "float",
+          "double",
+          "bytes",
+          "string",
+          "map<string, string>"
+        ],
+        "schema-default-type": "string",
+        "property-watch": "format"
+      }
+    }
+  ]
+}

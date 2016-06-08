@@ -1,5 +1,5 @@
 /*
- * Copyright © 2015-2016 Cask Data, Inc.
+ * Copyright © 2016 Cask Data, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not
  * use this file except in compliance with the License. You may obtain a copy of
@@ -34,17 +34,13 @@ import co.cask.hydrator.common.ReferenceBatchSource;
 import co.cask.hydrator.common.ReferencePluginConfig;
 import co.cask.hydrator.common.SourceInputFormatProvider;
 import co.cask.hydrator.common.batch.JobUtils;
-import co.cask.hydrator.plugin.common.BatchFileFilter;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Charsets;
 import com.google.common.base.Strings;
-import com.google.gson.Gson;
-import com.google.gson.reflect.TypeToken;
 import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.mapreduce.Job;
-import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -52,12 +48,8 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.lang.reflect.Type;
-import java.text.SimpleDateFormat;
-import java.util.Calendar;
 import java.util.Date;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 import javax.annotation.Nullable;
 
 /**
@@ -118,7 +110,6 @@ public class XMLReaderBatchSource extends ReferenceBatchSource<LongWritable, Obj
   @Override
   public void configurePipeline(PipelineConfigurer pipelineConfigurer) {
     super.configurePipeline(pipelineConfigurer);
-    //validation of fields
     config.validateConfig();
     pipelineConfigurer.getStageConfigurer().setOutputSchema(DEFAULT_XML_SCHEMA);
     if (StringUtils.isNotEmpty(config.tableName)) {
@@ -130,44 +121,42 @@ public class XMLReaderBatchSource extends ReferenceBatchSource<LongWritable, Obj
   public void prepareRun(BatchSourceContext context) throws Exception {
     Job job = JobUtils.createInstance();
     Configuration conf = job.getConfiguration();
-
     if (StringUtils.isNotEmpty(config.pattern)) {
       conf.set(XMLInputFormat.XML_INPUTFORMAT_PATTERN, config.pattern);
     }
-
     XMLInputFormat.addInputPaths(job, config.path);
     if (config.maxSplitSize != null) {
       XMLInputFormat.setMaxInputSplitSize(job, config.maxSplitSize);
     }
-
     conf.set(XMLInputFormat.XML_INPUTFORMAT_REPROCESSING_REQUIRED, this.config.reprocessingReq);
     //set file tracking information to be available to read.
     setFileTrackingInfo(context, conf);
-
     if (StringUtils.isNotEmpty(this.config.actionAfterProcess)) {
       conf.set(XMLInputFormat.XML_INPUTFORMAT_FILE_ACTION, this.config.actionAfterProcess);
     }
     if (StringUtils.isNotEmpty(this.config.actionAfterProcess)) {
       conf.set(XMLInputFormat.XML_INPUTFORMAT_TARGET_FOLDER, this.config.targetFolder);
     }
-
     conf.set(XMLInputFormat.XML_INPUTFORMAT_NODE_PATH, this.config.nodePath);
     context.setInput(Input.of(config.referenceName, new SourceInputFormatProvider(XMLInputFormat.class, conf)));
   }
 
   /**
    * Method to set file tracking information to temporary file to read.
+   * This is to read / write file tracking information from / to XMLInputFormat and XMLRecordReader using temporary
+   * file, as there is no direct way to read / write information from / to dataset.
    * @param context
    * @param conf
    * @throws IOException
    */
   private void setFileTrackingInfo(BatchSourceContext context, Configuration conf) throws IOException {
     // set list of previously processed files in config
-    if (StringUtils.isNotEmpty(this.config.tableName)) {
+    String tableName = this.config.tableName;
+    if (StringUtils.isNotEmpty(tableName)) {
       try {
-        processedFileTrackingTable = context.getDataset(this.config.tableName);
+        processedFileTrackingTable = context.getDataset(tableName);
         if (processedFileTrackingTable != null) {
-          File tempFile = new File(this.config.tableName);
+          File tempFile = new File(tableName);
           // if file exists, then delete it.
           if (tempFile.exists()) {
             tempFile.delete();
@@ -183,10 +172,10 @@ public class XMLReaderBatchSource extends ReferenceBatchSource<LongWritable, Obj
             bw.write(new String(keyValue.getKey(), Charsets.UTF_8) + "\n");
           }
           bw.close();
-          conf.set(XMLInputFormat.XML_INPUTFORMAT_PROCESSED_DATA_TEMP_FILE, this.config.tableName);
+          conf.set(XMLInputFormat.XML_INPUTFORMAT_PROCESSED_DATA_TEMP_FILE, tableName);
         }
-      } catch(IOException ex) {
-        throw ex;
+      } catch(IOException ioException) {
+        throw ioException;
       }catch (DatasetInstantiationException exception) {
         throw exception;
       }
@@ -216,6 +205,7 @@ public class XMLReaderBatchSource extends ReferenceBatchSource<LongWritable, Obj
     super.onRunFinish(succeeded, context);
     if (StringUtils.isNotEmpty(this.config.tableName)) {
       try {
+        //read file tracking information updated by XMLRecordReader and put it in dataset.
         File file = new File(this.config.tableName);
         BufferedReader reader = new BufferedReader(new FileReader(file));
         String line = null;
@@ -305,15 +295,14 @@ public class XMLReaderBatchSource extends ReferenceBatchSource<LongWritable, Obj
         throw new IllegalArgumentException("Path cannot be empty.");
       } else if (Strings.isNullOrEmpty(this.nodePath)) {
         throw new IllegalArgumentException("Node path cannot be empty.");
+      } else if (Strings.isNullOrEmpty(this.tableName)) {
+        throw new IllegalArgumentException("Table Name cannot be empty.");
       } else if (!Strings.isNullOrEmpty(this.actionAfterProcess) && this.reprocessingReq.equalsIgnoreCase("YES")) {
         throw new IllegalArgumentException("Please select either 'After Processing Action' or 'Reprocessing " +
                                              "Required', both cannot be applied at same time.");
       } else if (this.actionAfterProcess != null && (this.actionAfterProcess.equalsIgnoreCase("archive") ||
         this.actionAfterProcess.equalsIgnoreCase("move")) && Strings.isNullOrEmpty(this.targetFolder)) {
         throw new IllegalArgumentException("Target folder cannot be Empty for Action = " + actionAfterProcess + ".");
-      }
-      else if (Strings.isNullOrEmpty(this.tableName)) {
-        throw new IllegalArgumentException("Table Name cannot be empty.");
       }
     }
   }

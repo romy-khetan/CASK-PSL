@@ -82,6 +82,12 @@ public class XMLInputFormat extends FileInputFormat<LongWritable, Map<String, St
     return listStatus;
   }
 
+  /**
+   * Method to filter files from the preprocessed file list.
+   * @param conf
+   * @param listStatusList
+   * @return List<FileStatus> - filtered file list.
+   */
   private List<FileStatus> getPreProcessedFilteredListStatus(Configuration conf, List<FileStatus> listStatusList) {
     String processingReq = conf.get(XML_INPUTFORMAT_REPROCESSING_REQUIRED);
     String processedDataTempFile = conf.get(XML_INPUTFORMAT_PROCESSED_DATA_TEMP_FILE);
@@ -101,6 +107,12 @@ public class XMLInputFormat extends FileInputFormat<LongWritable, Map<String, St
     return listStatusList;
   }
 
+  /**
+   * Method to read file tracking information using temporary file.
+   * This temporary file is in sync with file tracking information dataset.
+   * @param processedDataTempFile
+   * @return List<String> - List of pre-processed files.
+   */
   private List<String> getPreProcessedFileList(String processedDataTempFile) {
     List<String> processedFileList = new ArrayList<String>();
     try {
@@ -112,12 +124,13 @@ public class XMLInputFormat extends FileInputFormat<LongWritable, Map<String, St
         processedFileList.add(line.trim());
       }
       reader.close();
-      //empty file contents
+      //empty file contents so that only new processed file information added.
       PrintWriter writer = new PrintWriter(file);
       writer.print("");
       writer.close();
     } catch (IOException exception) {
-      //sallow exception
+      throw new IllegalArgumentException("Error while reading pre-processed tracking information file : "
+                                           + exception.getMessage());
     }
     return processedFileList;
   }

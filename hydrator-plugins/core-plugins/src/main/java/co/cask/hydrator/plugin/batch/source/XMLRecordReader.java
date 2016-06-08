@@ -205,18 +205,22 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
     return false;
   }
 
+  /**
+   * Method to take actions after EOF reached.
+   * @throws IOException
+   */
   private void actionsAfterEOF() throws IOException {
     if (StringUtils.isNotEmpty(fileAction)) {
-      processFileActions();
+      processFileAction();
     }
     updateFileTrackingInfo();
   }
 
   /**
-   *
+   * Method to process file with actions (Delete, Move, Archive ) specified.
    * @throws IOException
    */
-  private void processFileActions() throws IOException {
+  private void processFileAction() throws IOException {
     fileAction = fileAction.toLowerCase();
     try {
       switch (fileAction) {
@@ -250,6 +254,10 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
     }
   }
 
+  /**
+   * Method to update temporary file with latest XML processed information.
+   * @throws IOException
+   */
   private void updateFileTrackingInfo() throws IOException {
     try {
       File tempFile = new File(tempFilePath);

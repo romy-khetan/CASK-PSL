@@ -31,7 +31,10 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileWriter;
+import java.io.FilterInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.text.DecimalFormat;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.zip.ZipEntry;
@@ -66,6 +69,9 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
   private String fileAction;
   private FileSystem fs;
   private String targetFolder;
+  private long availableBytes = 0;
+  private PublishingInputStream inputStream;
+  private DecimalFormat df = new DecimalFormat("#.##");
 
   public XMLRecordReader(FileSplit split, Configuration conf) throws IOException {
       file = split.getPath();
@@ -73,8 +79,10 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
       fs = file.getFileSystem(conf);
       XMLInputFactory factory = XMLInputFactory.newInstance();
       FSDataInputStream fdDataInputStream = fs.open(file);
+      inputStream = new PublishingInputStream(fdDataInputStream);
+      availableBytes  = inputStream.available();
       try {
-      reader = factory.createXMLStreamReader(fdDataInputStream);
+       reader = factory.createXMLStreamReader(inputStream);
       } catch (XMLStreamException exception) {
         throw new RuntimeException("XMLStreamException exception : ", exception);
       }
@@ -87,7 +95,7 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
       nodes = nodePath.split("/");
       totalNodes = nodes.length;
 
-      //map to store xpath nodes with key as node level
+      //map to store node path specified nodes with key as node level
       actualNodeLevelMap = new HashMap<Integer, String>();
       for (int i = 0; i < totalNodes; i++) {
         actualNodeLevelMap.put(i, nodes[i]);
@@ -112,7 +120,9 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
 
   @Override
   public float getProgress() throws IOException {
-    return 1.0f;
+    float progress = (float) inputStream.getTotalBytes() /  availableBytes;
+    progress = Float.valueOf(df.format(progress));
+    return progress;
   }
 
   @Override
@@ -137,15 +147,14 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
     String lastNode = nodes[lastNodeIndex];
     StringBuilder xmlRecord = new StringBuilder();
 
-    //flag to know if xml record matching to xpath has been read and ready to use.
+    //flag to know if xml record matching to node path has been read and ready to use.
     boolean xmlRecordReady = false;
-    //flag to know if matching xpath node found
-    boolean xPathFound = false;
+    //flag to know if matching node found as per node path
+    boolean nodeFound = false;
 
     try {
       while (reader.hasNext()) {
         int event = reader.next();
-
         switch (event) {
           case XMLStreamConstants.START_ELEMENT:
             String nodeNameStart = reader.getLocalName();
@@ -158,32 +167,32 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
                 validHierarchy = false;
               }
             }
-            //check if node hierarchy is valid and it matches with last node in xpath
+            //check if node hierarchy is valid and it matches with last node in node path
             //then start appending tag information to create valid XML Record.
             if (validHierarchy && nodeNameStart.equals(lastNode)) {
-              xmlRecord.append(OPENING_START_TAG_DELIMITER).append(nodeNameStart).append(CLOSING_START_TAG_DELIMITER);
-              //Set flag for valid x-path node found
-              xPathFound = true;
+              appendStartTagInformation(nodeNameStart, xmlRecord);
+              //Set flag for valid node path found
+              nodeFound = true;
               //set file offset
               currentKey.set(reader.getLocation().getLineNumber());
-            } else if (xPathFound) {
-              //append all child nodes inside valid x-path node
-              xmlRecord.append(OPENING_START_TAG_DELIMITER).append(nodeNameStart).append(CLOSING_START_TAG_DELIMITER);
+            } else if (nodeFound) {
+              //append all child nodes inside valid node path
+              appendStartTagInformation(nodeNameStart, xmlRecord);
             }
             nodeLevel++;
             break;
           case XMLStreamConstants.CHARACTERS:
-            if (xPathFound) {
+            if (nodeFound) {
               xmlRecord.append(reader.getText());
             }
             break;
           case XMLStreamConstants.END_ELEMENT:
             String nodeNameEnd = reader.getLocalName();
-            if (xPathFound) {
+            if (nodeFound) {
               //add closing tag
               xmlRecord.append(OPENING_END_TAG_DELIMITER).append(nodeNameEnd).append(CLOSING_END_TAG_DELIMITER);
               if (nodeNameEnd.equals(lastNode)) {
-                xPathFound = false;
+                nodeFound = false;
                 //set flag for XML record is ready to emit.
                 xmlRecordReady = true;
               }
@@ -199,10 +208,25 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
         }
       }
     } catch (XMLStreamException exception) {
-      exception.printStackTrace();
+      throw new IllegalArgumentException(exception.getMessage());
     }
     actionsAfterEOF();
     return false;
+  }
+
+  /**
+   * Method to append start tag information along with attributes if any
+   * @param nodeNameStart
+   * @param xmlRecord
+   */
+  private void appendStartTagInformation(String nodeNameStart, StringBuilder xmlRecord) {
+    xmlRecord.append(OPENING_START_TAG_DELIMITER).append(nodeNameStart);
+    int count = reader.getAttributeCount();
+    for (int i = 0; i < count; i++) {
+      xmlRecord.append(" ").append(reader.getAttributeLocalName(i)).append("=\"").append(reader.getAttributeValue(i))
+        .append("\"");
+    }
+    xmlRecord.append(CLOSING_START_TAG_DELIMITER);
   }
 
   /**
@@ -250,7 +274,7 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
           break;
       }
     } catch (IOException ioe) {
-      System.out.println("Error in Post Processed File operation: " + ioe);
+      throw ioe;
     }
   }
 
@@ -266,7 +290,43 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
       bw.write(fileName + "\n");
       bw.close();
     } catch (IOException ioe) {
-      System.out.println("Error while updating tracking information in file : " + ioe);
+      throw ioe;
+    }
+  }
+
+  /**
+   * Class to publish input stream and get total bytes read.
+   */
+  public class PublishingInputStream extends FilterInputStream {
+    private long totalBytes = 0;
+
+    public PublishingInputStream(InputStream in) {
+      super(in);
+    }
+
+    @Override
+    public int read(byte[] b) throws IOException {
+      int count = super.read(b);
+      this.totalBytes += count;
+      return count;
+    }
+
+    @Override
+    public int read() throws IOException {
+      int count = super.read();
+      this.totalBytes += count;
+      return count;
+    }
+
+    @Override
+    public int read(byte[] b, int off, int len) throws IOException {
+      int count = super.read(b, off, len);
+      this.totalBytes += count;
+      return count;
+    }
+
+    public long getTotalBytes() {
+      return totalBytes;
     }
   }
 }

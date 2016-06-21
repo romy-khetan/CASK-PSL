@@ -54,11 +54,11 @@ import javax.xml.xpath.XPathFactory;
 
 /**
  * Parses XML Event using XPath.
- * This is used in conjunction with the XML Reader Batch Source.
+ * This should generally be used in conjunction with the XML Reader Batch Source.
  */
 @Plugin(type = Transform.PLUGIN_TYPE)
 @Name("XMLParser")
-@Description("Parse XML events retrieved using XML Reader Batch Source,using XPath")
+@Description("Parse XML events based on XPath")
 public class XMLParser extends Transform<StructuredRecord, StructuredRecord> {
   private final Config config;
   private Schema outSchema;
@@ -84,6 +84,40 @@ public class XMLParser extends Transform<StructuredRecord, StructuredRecord> {
     mapErrorProcessing.put("Ignore the error record and continue", 1);
     mapErrorProcessing.put("Exit on error", 2);
     mapErrorProcessing.put("Write to error dataset", 3);
+  }
+
+  /**
+   * Valid if xpathMappings and schema contain the same field names.
+   */
+  private void validateXpathAndSchema() {
+    String[] xpaths = config.xpathFieldMapping.split(",");
+    String fieldName;
+    String xpathValue;
+    for (String xpath : xpaths) {
+      String[] xpathmap = xpath.split(":"); //name:xpath[,name:xpath]*
+      fieldName = xpathmap[0].trim();
+      if (Strings.isNullOrEmpty(fieldName)) {
+        throw new IllegalArgumentException("Field name cannot be null or empty.");
+      } else if (xpathmap.length < 2 || Strings.isNullOrEmpty(xpathmap[1])) {
+        throw new IllegalArgumentException(String.format("Xpath for field name, %s cannot be null or empty.",
+                                                         fieldName));
+      }
+      xPathMapping.put(fieldName, xpathmap[1].trim());
+    }
+    List<Schema.Field> outFields = outSchema.getFields();
+    // Checks if all the fields in the XPath mapping are present in the output schema.
+    // If they are not a list of fields that are not present is included in the error message.
+    StringBuilder notOutput = new StringBuilder();
+    for (Schema.Field field : outFields) {
+      fieldName = field.getName();
+      if (!xPathMapping.keySet().contains(field.getName())) {
+        notOutput.append(fieldName + ";");
+      }
+    }
+    if (notOutput.length() > 0) {
+      throw new IllegalArgumentException("Following fields are not present in output schema :" +
+                                           notOutput.toString());
+    }
   }
 
   @Override
@@ -121,7 +155,7 @@ public class XMLParser extends Transform<StructuredRecord, StructuredRecord> {
         case 3:
           emitter.emitError(new InvalidEntry<>(31, e.getStackTrace()[0].toString() + " : " + e.getMessage(), input));
           break;
-        default:
+        default:      //ignore on error (case 1)
           break;
       }
     }
@@ -216,32 +250,6 @@ public class XMLParser extends Transform<StructuredRecord, StructuredRecord> {
   }
 
   /**
-   * Valid if xpathMappings and schema contain the same field names.
-   */
-  private void validateXpathAndSchema() {
-    String[] xpaths = config.xpathFieldMapping.split(",");
-    for (String xpath : xpaths) {
-      String[] xpathmap = xpath.split(":"); //name:xpath[,name:xpath]*
-      xPathMapping.put(xpathmap[0].trim(), xpathmap[1].trim());
-    }
-    List<Schema.Field> outFields = outSchema.getFields();
-    // Checks if all the fields in the XPath mapping are present in the output schema.
-    // If they are not a list of fields that are not present is included in the error message.
-    StringBuilder notOutput = new StringBuilder();
-    String fieldName;
-    for (Schema.Field field : outFields) {
-      fieldName = field.getName();
-      if (!xPathMapping.keySet().contains(field.getName())) {
-        notOutput.append(fieldName + ";");
-      }
-    }
-    if (notOutput.length() > 0) {
-      throw new IllegalArgumentException("Following fields are not present in output schema :" +
-                                           notOutput.toString());
-    }
-  }
-
-  /**
    * Configuration for the XMLParser transform..
    */
   public static class Config extends PluginConfig {
@@ -288,13 +296,13 @@ public class XMLParser extends Transform<StructuredRecord, StructuredRecord> {
       for (String mapping : mappings) {
         String[] params = mapping.split(":");
         String fieldName = params[0].trim();
-        String type = params[1].toUpperCase().trim();
-        if (fieldName == null || fieldName.isEmpty()) {
-          throw new IllegalArgumentException("Field name cannot be null.");
-        } else if (type == null || type.isEmpty()) {
+        if (Strings.isNullOrEmpty(fieldName)) {
+          throw new IllegalArgumentException("Field name cannot be null or empty.");
+        } else if (params.length < 2 || Strings.isNullOrEmpty(params[1])) {
           throw new IllegalArgumentException("Type cannot be null. Please specify type for " + fieldName);
         }
-        Schema.Field field = Schema.Field.of(fieldName, Schema.nullableOf(Schema.of(Schema.Type.valueOf(type))));
+        Schema.Field field = Schema.Field.of(fieldName, Schema.nullableOf(Schema.of(Schema.Type.valueOf(
+          params[1].trim().toUpperCase()))));
         if (fields.contains(field)) {
           throw new IllegalArgumentException("Field " + fieldName + " already has type specified. Check the mapping.");
         } else {

@@ -46,7 +46,7 @@
               "Exit on error",
               "Write to error dataset"
             ],
-            "default": "UTF-8"
+            "default": "Ignore error and continue"
           }
         },
         {

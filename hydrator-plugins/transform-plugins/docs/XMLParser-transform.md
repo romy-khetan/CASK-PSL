@@ -2,23 +2,18 @@
 
 Description
 -----------
-The XML Parser uses XPath to extract field from a complex XML Event. This is generally used in conjunction with the
-XML Reader Batch Source. The XML Source Reader will provide individual events to the XML Parser and the XML Parser is
-responsible for extracting fields from the event and mapping them to output schema.
+The XML Parser uses XPath to extract field from a complex XML Event. This should generally be used in conjunction with
+the XML Reader Batch Source. The XML Source Reader will provide individual events to the XML Parser and the XML Parser
+will be responsible for extracting fields from the events and mapping them to output schema.
+
 
 Use Case
 --------
-1.  User should be able to specify the input field that should be considered as source of XML event or record.
-2.  User is able to specify XML encoding (default is UTF-8)
-3.  The Plugin should ignore comments in XML
-3.  User is able to specify a collection of XPath to output field name mapping
-      a.  User is able to extract values from Attribute (as supported by XPath)
-      b.  User is NOT able to XPaths that are arrays. It should be runtime error.
-6.  User is able to specify the output field types and the plugin performs appropriate conversions
-7.  User is able to specify what should happen when there is error in processing
-      a.  User can specify that the error record should be ignored
-      b.  User can specify that upon error it should stop processing
-      c.  User can specify that all the error records should be written to separate dataset
+The transform takes input record that contain xml events/records, parses it using the xpath specified and returns a
+structured record according to the schema specified by user.
+For example, this plugin can be used in conjuction with XML Reader Batch Source to extract values from XMLNews documents
+and to create structured records which will be easier to query.
+
 
 Properties
 ----------
@@ -40,7 +35,7 @@ The data type can be of following types- boolean, int, long, float, double, byte
 Example
 -------
 
-This example parses the xml record received in the the "body" field of the structured record, according to the
+This example parses the xml record received in "body" field of the input record, according to the
 xpathMappings specified, for each field name.
 The type output schema will be created, using the type specified for each field in "fieldTypeMapping".
 
@@ -53,10 +48,36 @@ The type output schema will be created, using the type specified for each field 
                 "properties": {
                     "encoding": "UTF-8",
                      "processOnError": "UTF-8",
-                      "xpathMappings": "category://book/@category,title://book/title,year:/bookstore/book[price>35.00]
-                      /year,price:/bookstore/book[price>35.00]/price,subcategory://book/subcategory",
+                      "xpathMappings": "category://book/@category,
+                                        title://book/title,
+                                        year:/bookstore/book[price>35.00]/year,
+                                        price:/bookstore/book[price>35.00]/price,
+                                        subcategory://book/subcategory",
                       "fieldTypeMapping": "category:string,title:string,year:int,price:double,subcategory:string",
                       "input": "body"
                 }
             }
        }
+
+For example, suppose the transform recieves the input record:
+
+    +=========================================================================================================+
+    | offset   | body                                                                                         |
+    +=========================================================================================================+
+    | 1        | <bookstore><book category="cooking"><subcategory><type>Continental</type></subcategory>      |
+    |          | <title lang=\"en\">Everyday Italian</title><author>Giada De Laurentiis</author><year>2005    |
+    |          | </year><price>30.00</price></book></bookstore>                                               |
+    | 2        | <bookstore><book category="children"><subcategory><type>Series</type></subcategory>          |
+    |          | <title lang=\"en\">Harry Potter</title><author>J K. Rowling</author><year>2005</year><price> |
+    |          | 49.99</price></book></bookstore>                                                             |
+    +=========================================================================================================+
+
+Output record will contain all the output fields specified by user:
+
+    +=========================================================================================================+
+    | category  | title              | year   |  price  | subcategory                                         |
+    +=========================================================================================================+
+    | cooking   | Everyday Italian   | null   |  null   | <subcategory><type>Continental</type></subcategory> |
+    | children  | Harry Potter       | 2005   | 49.99   | <subcategory><type>Series</type></subcategory>      |
+    +=========================================================================================================+
+

@@ -1,0 +1,11 @@
+{
+  "config": {
+    "cdap": {
+      "cdap_site": {
+        "explore.enabled": "true"
+      },
+      "version": "3.4.0-1"
+    }
+  },
+  "initial-lease-duration": 82800000
+}

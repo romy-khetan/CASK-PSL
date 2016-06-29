@@ -1,0 +1,13 @@
+{
+  "config": {
+    "hadoop_mapr": {
+      "distribution_version": "5.0.0"
+    },
+    "hbase": {
+      "version": "0.98.12.201606022139-1"
+    }
+  },
+  "provider-fields": {
+    "google_data_disk_size_gb": "200,200"
+  }
+}

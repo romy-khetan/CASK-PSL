@@ -17,6 +17,7 @@
 package co.cask.hydrator.plugin.batch.source;
 
 import co.cask.cdap.api.artifact.ArtifactVersion;
+import co.cask.cdap.api.common.Bytes;
 import co.cask.cdap.api.data.format.StructuredRecord;
 import co.cask.cdap.api.dataset.lib.CloseableIterator;
 import co.cask.cdap.api.dataset.lib.KeyValue;
@@ -40,7 +41,6 @@ import co.cask.cdap.test.DataSetManager;
 import co.cask.cdap.test.MapReduceManager;
 import co.cask.cdap.test.TestConfiguration;
 import co.cask.hydrator.common.Constants;
-import com.google.common.base.Charsets;
 import org.apache.commons.io.FileUtils;
 import org.junit.After;
 import org.junit.Assert;
@@ -70,10 +70,10 @@ public class XMLReaderBatchSourceTest extends HydratorTestBase {
   private static final ArtifactSummary ETLBATCH_ARTIFACT =
     new ArtifactSummary(BATCH_APP_ARTIFACT_ID.getArtifact(), BATCH_APP_ARTIFACT_ID.getVersion());
   private static final String SOURCE_FOLDER_PATH = "src/test/resources/xmlsource/";
-  private static final String TARGET_FOLDER_PATH = "src/test/resources/xmltarget/";
   private File sourceFolder = new File(SOURCE_FOLDER_PATH);
-  private File targetFolder = new File(TARGET_FOLDER_PATH);
+  private File targetFolder = new File("src/test/resources/xmltarget/");
   private String sourceFolderUri = sourceFolder.toURI().toString();
+  private String targetFolderUri = targetFolder.toURI().toString();
 
   @ClassRule
   public static final TestConfiguration CONFIG = new TestConfiguration("explore.enabled", false);
@@ -93,8 +93,8 @@ public class XMLReaderBatchSourceTest extends HydratorTestBase {
       String xmlSourceFolder = "src/test/resources/";
       String catalogLargeFile = "catalogLarge.xml";
       String catalogSmallFile = "catalogSmall.xml";
-      FileUtils.copyFile(new File(xmlSourceFolder + catalogLargeFile), new File(SOURCE_FOLDER_PATH + catalogLargeFile));
-      FileUtils.copyFile(new File(xmlSourceFolder + catalogSmallFile), new File(SOURCE_FOLDER_PATH + catalogSmallFile));
+      FileUtils.copyFile(new File(xmlSourceFolder, catalogLargeFile), new File(SOURCE_FOLDER_PATH, catalogLargeFile));
+      FileUtils.copyFile(new File(xmlSourceFolder, catalogSmallFile), new File(SOURCE_FOLDER_PATH, catalogSmallFile));
   }
 
   /**
@@ -127,24 +127,28 @@ public class XMLReaderBatchSourceTest extends HydratorTestBase {
   /**
    * Method to Pre-Populate File tracking KeyValue with previously processed XML file.
    */
-  private Date createPreProcessedRecord(String processedFileTable, Date preProcessedDate) throws Exception {
+  private void createPreProcessedRecord(String processedFileTable, Date preProcessedDate) throws Exception {
     DataSetManager<KeyValueTable> dataSetManager = getDataset(processedFileTable);
     KeyValueTable keyValueTable = dataSetManager.get();
     //put record of processed file.
-    File catalogLarge = new File(SOURCE_FOLDER_PATH + "catalogLarge.xml");
-    keyValueTable.write(catalogLarge.toURI().toString().getBytes(Charsets.UTF_8),
-                        String.valueOf(preProcessedDate.getTime()).getBytes(Charsets.UTF_8));
+    File catalogLarge = new File(SOURCE_FOLDER_PATH, "catalogLarge.xml");
+    keyValueTable.write(Bytes.toBytes(catalogLarge.toURI().toString()), Bytes.toBytes(preProcessedDate.getTime()));
+    dataSetManager.flush();
+  }
 
+  /**
+   * Method to Pre-Populate File tracking KeyValue with 40 days old expired record.
+   */
+  private void createExpiredRecord(String processedFileTable) throws Exception {
+    DataSetManager<KeyValueTable> dataSetManager = getDataset(processedFileTable);
+    KeyValueTable keyValueTable = dataSetManager.get();
     //put expired record which is 40 days old
-    File catalogSmall = new File(SOURCE_FOLDER_PATH + "catalogSmall.xml");
+    File catalogSmall = new File(SOURCE_FOLDER_PATH, "catalogSmall.xml");
     Calendar cal = Calendar.getInstance();
     cal.add(Calendar.DATE, -40);
     Date expiryDate = cal.getTime();
-    keyValueTable.write(catalogSmall.toURI().toString().getBytes(Charsets.UTF_8),
-                        String.valueOf(expiryDate.getTime()).getBytes(Charsets.UTF_8));
-
+    keyValueTable.write(Bytes.toBytes(catalogSmall.toURI().toString()), Bytes.toBytes(expiryDate.getTime()));
     dataSetManager.flush();
-    return preProcessedDate;
   }
 
   /**
@@ -154,17 +158,40 @@ public class XMLReaderBatchSourceTest extends HydratorTestBase {
     List<String> processedFileList  = new ArrayList<String>();
     DataSetManager<KeyValueTable> dataSetManager = getDataset(processedFileTable);
     KeyValueTable table = dataSetManager.get();
-    CloseableIterator<KeyValue<byte[], byte[]>> iterator = table.scan(null, null);
-    if (iterator != null) {
-      while (iterator.hasNext()) {
-        KeyValue<byte[], byte[]> keyValue = iterator.next();
-        Date date = new Date(Long.valueOf(new String(keyValue.getValue(), Charsets.UTF_8)));
-        if (date.after(preProcessedDate)) {
-          processedFileList.add(new String(keyValue.getKey(), Charsets.UTF_8));
+    try (CloseableIterator<KeyValue<byte[], byte[]>> iterator = table.scan(null, null)) {
+      if (iterator != null) {
+        while (iterator.hasNext()) {
+          KeyValue<byte[], byte[]> keyValue = iterator.next();
+          Date date = new Date(Bytes.toLong(keyValue.getValue()));
+          if (date.after(preProcessedDate)) {
+            processedFileList.add(Bytes.toString(keyValue.getKey()));
+          }
         }
       }
     }
     return processedFileList;
+  }
+
+  private ApplicationManager deployApplication(Map<String, String> sourceProperties, String outputDatasetName,
+                                               String applicationName) throws Exception {
+    ETLStage source = new ETLStage("XMLReader", new ETLPlugin("XMLReader", BatchSource.PLUGIN_TYPE, sourceProperties,
+                                                              null));
+    ETLStage sink = new ETLStage("sink", MockSink.getPlugin(outputDatasetName));
+    ETLBatchConfig etlConfig = ETLBatchConfig.builder("* * * * *")
+      .addStage(source)
+      .addStage(sink)
+      .addConnection(source.getName(), sink.getName())
+      .build();
+
+    AppRequest<ETLBatchConfig> appRequest = new AppRequest<>(ETLBATCH_ARTIFACT, etlConfig);
+    ApplicationId appId = NamespaceId.DEFAULT.app(applicationName);
+    return deployApplication(appId.toId(), appRequest);
+  }
+
+  private void startMapReduceJob(ApplicationManager appManager) throws Exception {
+    MapReduceManager mrManager = appManager.getMapReduceManager(ETLMapReduce.NAME);
+    mrManager.start();
+    mrManager.waitForFinish(5, TimeUnit.MINUTES);
   }
 
   @Test
@@ -181,35 +208,22 @@ public class XMLReaderBatchSourceTest extends HydratorTestBase {
       .put(Constants.Reference.REFERENCE_NAME, "XMLReaderNoXMLPreProcessingRequiredTest")
       .put("path", sourceFolderUri)
       .put("nodePath", "/catalog/book/price")
-      .put("targetFolder", TARGET_FOLDER_PATH)
+      .put("targetFolder", targetFolderUri)
       .put("reprocessingRequired", "No")
       .put("tableName", processedFileTable)
       .put("actionAfterProcess", "Delete")
       .put("tableExpiryPeriod", "40")
       .build();
 
-    ETLStage source = new ETLStage("XMLReader", new ETLPlugin("XMLReader", BatchSource.PLUGIN_TYPE,
-                                                              sourceProperties, null));
-
     String outputDatasetName = "output-batchsink-test-no-preprocessing-required";
-    ETLStage sink = new ETLStage("sink", MockSink.getPlugin(outputDatasetName));
-
-    ETLBatchConfig etlConfig = ETLBatchConfig.builder("* * * * *")
-      .addStage(source)
-      .addStage(sink)
-      .addConnection(source.getName(), sink.getName())
-      .build();
-
-    AppRequest<ETLBatchConfig> appRequest = new AppRequest<>(ETLBATCH_ARTIFACT, etlConfig);
-    ApplicationId appId = NamespaceId.DEFAULT.app("XMLReaderNoXMLPreProcessingRequiredTest");
-    ApplicationManager appManager = deployApplication(appId.toId(), appRequest);
+    ApplicationManager appManager = deployApplication(sourceProperties, outputDatasetName,
+                                                      "XMLReaderNoXMLPreProcessingRequiredTest");
 
     Date preProcessedDate = new Date();
     createPreProcessedRecord(processedFileTable, preProcessedDate);
+    createExpiredRecord(processedFileTable);
 
-    MapReduceManager mrManager = appManager.getMapReduceManager(ETLMapReduce.NAME);
-    mrManager.start();
-    mrManager.waitForFinish(5, TimeUnit.MINUTES);
+    startMapReduceJob(appManager);
 
     //assert for number of files processed
     List<String> processedFileList = getProcessedFileList(processedFileTable, preProcessedDate);
@@ -237,35 +251,21 @@ public class XMLReaderBatchSourceTest extends HydratorTestBase {
       .put(Constants.Reference.REFERENCE_NAME, "XMLReaderXMLPreProcessingRequiredTest")
       .put("path", sourceFolderUri)
       .put("nodePath", "/catalog/book/price")
-      .put("targetFolder", TARGET_FOLDER_PATH)
+      .put("targetFolder", targetFolderUri)
       .put("reprocessingRequired", "Yes")
       .put("tableName", processedFileTable)
       .put("actionAfterProcess", "None")
       .put("tableExpiryPeriod", "30")
       .build();
 
-    ETLStage source = new ETLStage("XMLReader", new ETLPlugin("XMLReader", BatchSource.PLUGIN_TYPE,
-                                                              sourceProperties, null));
-
     String outputDatasetName = "output-batchsink-test-preprocessing-required";
-    ETLStage sink = new ETLStage("sink", MockSink.getPlugin(outputDatasetName));
-
-    ETLBatchConfig etlConfig = ETLBatchConfig.builder("* * * * *")
-      .addStage(source)
-      .addStage(sink)
-      .addConnection(source.getName(), sink.getName())
-      .build();
-
-    AppRequest<ETLBatchConfig> appRequest = new AppRequest<>(ETLBATCH_ARTIFACT, etlConfig);
-    ApplicationId appId = NamespaceId.DEFAULT.app("XMLReaderXMLPreProcessingRequiredTest");
-    ApplicationManager appManager = deployApplication(appId.toId(), appRequest);
+    ApplicationManager appManager = deployApplication(sourceProperties, outputDatasetName,
+                                                      "XMLReaderXMLPreProcessingRequiredTest");
 
     Date preProcessedDate = new Date();
     createPreProcessedRecord(processedFileTable, preProcessedDate);
 
-    MapReduceManager mrManager = appManager.getMapReduceManager(ETLMapReduce.NAME);
-    mrManager.start();
-    mrManager.waitForFinish(5, TimeUnit.MINUTES);
+    startMapReduceJob(appManager);
 
     List<String> processedFileList = getProcessedFileList(processedFileTable, preProcessedDate);
     Assert.assertEquals(2, processedFileList.size());
@@ -282,32 +282,17 @@ public class XMLReaderBatchSourceTest extends HydratorTestBase {
       .put(Constants.Reference.REFERENCE_NAME, "XMLReaderInvalidNodePathArchiveFilesTest")
       .put("path", sourceFolderUri)
       .put("nodePath", "/catalog/book/prices")
-      .put("targetFolder", TARGET_FOLDER_PATH)
+      .put("targetFolder", targetFolderUri)
       .put("reprocessingRequired", "No")
       .put("tableName", processedFileTable)
       .put("actionAfterProcess", "archive")
       .put("tableExpiryPeriod", "30")
       .build();
 
-    ETLStage source = new ETLStage("XMLReader", new ETLPlugin("XMLReader", BatchSource.PLUGIN_TYPE,
-                                                              sourceProperties, null));
-
     String outputDatasetName = "output-batchsink-test-invalid-node-path-archived-files";
-    ETLStage sink = new ETLStage("sink", MockSink.getPlugin(outputDatasetName));
-
-    ETLBatchConfig etlConfig = ETLBatchConfig.builder("* * * * *")
-      .addStage(source)
-      .addStage(sink)
-      .addConnection(source.getName(), sink.getName())
-      .build();
-
-    AppRequest<ETLBatchConfig> appRequest = new AppRequest<>(ETLBATCH_ARTIFACT, etlConfig);
-    ApplicationId appId = NamespaceId.DEFAULT.app("XMLReaderInvalidNodePathArchiveFilesTest");
-    ApplicationManager appManager = deployApplication(appId.toId(), appRequest);
-
-    MapReduceManager mrManager = appManager.getMapReduceManager(ETLMapReduce.NAME);
-    mrManager.start();
-    mrManager.waitForFinish(5, TimeUnit.MINUTES);
+    ApplicationManager appManager = deployApplication(sourceProperties, outputDatasetName,
+                                                      "XMLReaderInvalidNodePathArchiveFilesTest");
+    startMapReduceJob(appManager);
 
     //zero records for invalid node path
     DataSetManager<Table> outputManager = getDataset(outputDatasetName);
@@ -318,9 +303,9 @@ public class XMLReaderBatchSourceTest extends HydratorTestBase {
     File[] sourceFiles = sourceFolder.listFiles();
     Assert.assertEquals(0, sourceFiles.length);
 
-    //target folder must have 2 archived files
+    //target folder must have 2 archived zip and 2 .crc files
     File[] targetFiles = targetFolder.listFiles();
-    Assert.assertEquals(2, targetFiles.length);
+    Assert.assertEquals(4, targetFiles.length);
   }
 
   @Test
@@ -331,32 +316,17 @@ public class XMLReaderBatchSourceTest extends HydratorTestBase {
       .put("path", sourceFolderUri)
       .put("pattern", "Large.xml$") // file ends with Large.xml
       .put("nodePath", "/catalog/book/price")
-      .put("targetFolder", TARGET_FOLDER_PATH)
+      .put("targetFolder", targetFolderUri)
       .put("reprocessingRequired", "No")
       .put("tableName", processedFileTable)
       .put("actionAfterProcess", "move")
       .put("tableExpiryPeriod", "30")
       .build();
 
-    ETLStage source = new ETLStage("XMLReader", new ETLPlugin("XMLReader", BatchSource.PLUGIN_TYPE,
-                                                              sourceProperties, null));
-
     String outputDatasetName = "output-batchsink-test-pattern-move-files";
-    ETLStage sink = new ETLStage("sink", MockSink.getPlugin(outputDatasetName));
-
-    ETLBatchConfig etlConfig = ETLBatchConfig.builder("* * * * *")
-      .addStage(source)
-      .addStage(sink)
-      .addConnection(source.getName(), sink.getName())
-      .build();
-
-    AppRequest<ETLBatchConfig> appRequest = new AppRequest<>(ETLBATCH_ARTIFACT, etlConfig);
-    ApplicationId appId = NamespaceId.DEFAULT.app("XMLReaderWithPatternAndMoveFilesTest");
-    ApplicationManager appManager = deployApplication(appId.toId(), appRequest);
-
-    MapReduceManager mrManager = appManager.getMapReduceManager(ETLMapReduce.NAME);
-    mrManager.start();
-    mrManager.waitForFinish(5, TimeUnit.MINUTES);
+    ApplicationManager appManager = deployApplication(sourceProperties, outputDatasetName,
+                                                      "XMLReaderWithPatternAndMoveFilesTest");
+    startMapReduceJob(appManager);
 
     //assert for number of record derived.
     DataSetManager<Table> outputManager = getDataset(outputDatasetName);
@@ -373,46 +343,31 @@ public class XMLReaderBatchSourceTest extends HydratorTestBase {
   }
 
   @Test
-  public void testXMLReaderWithInvalidPatternDeleteFiles() throws Exception {
+  public void testXMLReaderWithInvalidPatternArchiveFiles() throws Exception {
     String processedFileTable = "XMLTrackingTableInvalidPatternDeleteFiles";
     Map<String, String> sourceProperties = new ImmutableMap.Builder<String, String>()
       .put(Constants.Reference.REFERENCE_NAME, "XMLReaderInvalidPatternDeleteFilesTest")
       .put("path", sourceFolderUri)
       .put("pattern", "^catalogMedium") //file name start with catalogMedium, does not exist
       .put("nodePath", "/catalog/book/price")
-      .put("targetFolder", TARGET_FOLDER_PATH)
+      .put("targetFolder", targetFolderUri)
       .put("reprocessingRequired", "No")
       .put("tableName", processedFileTable)
       .put("actionAfterProcess", "archive")
       .put("tableExpiryPeriod", "30")
       .build();
 
-    ETLStage source = new ETLStage("XMLReader", new ETLPlugin("XMLReader", BatchSource.PLUGIN_TYPE,
-                                                              sourceProperties, null));
-
     String outputDatasetName = "output-batchsink-test-invalid-pattern-delete-files";
-    ETLStage sink = new ETLStage("sink", MockSink.getPlugin(outputDatasetName));
-
-    ETLBatchConfig etlConfig = ETLBatchConfig.builder("* * * * *")
-      .addStage(source)
-      .addStage(sink)
-      .addConnection(source.getName(), sink.getName())
-      .build();
-
-    AppRequest<ETLBatchConfig> appRequest = new AppRequest<>(ETLBATCH_ARTIFACT, etlConfig);
-    ApplicationId appId = NamespaceId.DEFAULT.app("XMLReaderInvalidPatternDeleteFilesTest");
-    ApplicationManager appManager = deployApplication(appId.toId(), appRequest);
-
-    MapReduceManager mrManager = appManager.getMapReduceManager(ETLMapReduce.NAME);
-    mrManager.start();
-    mrManager.waitForFinish(5, TimeUnit.MINUTES);
+    ApplicationManager appManager = deployApplication(sourceProperties, outputDatasetName,
+                                                      "XMLReaderInvalidPatternDeleteFilesTest");
+    startMapReduceJob(appManager);
 
     //0 record fetched as no pattern matching file
     DataSetManager<Table> outputManager = getDataset(outputDatasetName);
     List<StructuredRecord> output = MockSink.readOutput(outputManager);
     Assert.assertEquals(0, output.size());
 
-    //source folder must have 2 files, no file deleted
+    //source folder must have 2 files, no file archived and deleted
     File[] sourceFiles = sourceFolder.listFiles();
     Assert.assertEquals(2, sourceFiles.length);
   }

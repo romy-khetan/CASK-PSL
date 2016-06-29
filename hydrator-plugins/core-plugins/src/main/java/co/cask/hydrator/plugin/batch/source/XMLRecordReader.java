@@ -16,9 +16,10 @@
 
 package co.cask.hydrator.plugin.batch.source;
 
-import org.apache.commons.lang.StringUtils;
+import co.cask.hydrator.plugin.common.FileUtililty;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.LongWritable;
@@ -29,18 +30,12 @@ import org.apache.hadoop.mapreduce.lib.input.FileSplit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.BufferedWriter;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.FileWriter;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.text.DecimalFormat;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamConstants;
 import javax.xml.stream.XMLStreamException;
@@ -59,21 +54,18 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
 
   private LongWritable currentKey;
   private Map<String, String> currentValue;
-  private String nodePath;
   private final String fileName;
   private final XMLStreamReader reader;
   private final String[] nodes;
-  private final int totalNodes;
-  private final Map<Integer, String> actualNodeLevelMap;
-  private Map<Integer, String> currentNodeLevelMap;
+  private final Map<Integer, String> currentNodeLevelMap;
   private int nodeLevel = 0;
-  private String tempFilePath = null;
+  private final String tempFilePath;
   private final Path file;
-  private String fileAction;
-  private FileSystem fs;
+  private final String fileAction;
+  private final FileSystem fs;
   private final String targetFolder;
-  private long availableBytes = 0;
-  private final PublishingInputStream inputStream;
+  private final long availableBytes;
+  private final TrackingInputStream inputStream;
   private final DecimalFormat df = new DecimalFormat("#.##");
 
   public XMLRecordReader(FileSplit split, Configuration conf) throws IOException {
@@ -82,7 +74,7 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
     fs = file.getFileSystem(conf);
     XMLInputFactory factory = XMLInputFactory.newInstance();
     FSDataInputStream fdDataInputStream = fs.open(file);
-    inputStream = new PublishingInputStream(fdDataInputStream);
+    inputStream = new TrackingInputStream(fdDataInputStream);
     availableBytes = inputStream.available();
     try {
       reader = factory.createXMLStreamReader(inputStream);
@@ -90,22 +82,16 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
       throw new RuntimeException("XMLStreamException exception : ", exception);
     }
     //set required node path details.
-    nodePath = conf.get(XMLInputFormat.XML_INPUTFORMAT_NODE_PATH);
+    String nodePath = conf.get(XMLInputFormat.XML_INPUTFORMAT_NODE_PATH);
     //remove preceding '/' in node path to avoid first unwanted element after split('/')
     if (nodePath.indexOf("/") == 0) {
       nodePath = nodePath.substring(1, nodePath.length());
     }
     nodes = nodePath.split("/");
-    totalNodes = nodes.length;
 
-    //map to store node path specified nodes with key as node level
-    actualNodeLevelMap = new HashMap<Integer, String>();
-    for (int i = 0; i < totalNodes; i++) {
-      actualNodeLevelMap.put(i, nodes[i]);
-    }
     currentNodeLevelMap = new HashMap<Integer, String>();
 
-    tempFilePath = conf.get(XMLInputFormat.XML_INPUTFORMAT_PROCESSED_DATA_TEMP_FILE);
+    tempFilePath = conf.get(XMLInputFormat.XML_INPUTFORMAT_PROCESSED_DATA_TEMP_FOLDER);
     fileAction = conf.get(XMLInputFormat.XML_INPUTFORMAT_FILE_ACTION);
     targetFolder = conf.get(XMLInputFormat.XML_INPUTFORMAT_TARGET_FOLDER);
   }
@@ -116,7 +102,7 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
       try {
         reader.close();
       } catch (XMLStreamException exception) {
-        // Swallow exception.
+        LOG.error("Error occurred while closing reader : " +  exception.getMessage());
       }
     }
   }
@@ -124,8 +110,7 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
   @Override
   public float getProgress() throws IOException {
     float progress = (float) inputStream.getTotalBytes() /  availableBytes;
-    progress = Float.valueOf(df.format(progress));
-    return progress;
+    return Float.valueOf(df.format(progress));
   }
 
   @Override
@@ -146,8 +131,7 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
   public boolean nextKeyValue() throws IOException, InterruptedException {
     currentKey = new LongWritable();
     currentValue = new HashMap<String, String>();
-    int lastNodeIndex = totalNodes - 1;
-    String lastNode = nodes[lastNodeIndex];
+    String lastNode = nodes[nodes.length - 1];
     StringBuilder xmlRecord = new StringBuilder();
 
     //flag to know if xml record matching to node path has been read and ready to use.
@@ -166,7 +150,7 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
 
             //check if node hierarchy matches with expected one.
             for (int j = nodeLevel; j >= 0; j--) {
-              if (!currentNodeLevelMap.get(j).equals(actualNodeLevelMap.get(j))) {
+              if (j < nodes.length && !currentNodeLevelMap.get(j).equals(nodes[j])) {
                 validHierarchy = false;
               }
             }
@@ -213,7 +197,8 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
     } catch (XMLStreamException exception) {
       throw new IllegalArgumentException(exception);
     }
-    actionsAfterEOF();
+    updateFileTrackingInfo();
+    processFileAction();
     return false;
   }
 
@@ -231,51 +216,21 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
   }
 
   /**
-   * Method to take actions after EOF reached.
-   */
-  private void actionsAfterEOF() throws IOException {
-    if (StringUtils.isNotEmpty(fileAction)) {
-      processFileAction();
-    }
-    updateFileTrackingInfo();
-  }
-
-  /**
    * Method to process file with actions (Delete, Move, Archive ) specified.
    * @throws IOException - IO Exception occurred while deleting, moving or archiving file.
    */
   private void processFileAction() throws IOException {
-    fileAction = fileAction.toLowerCase();
-    switch (fileAction) {
+    switch (fileAction.toLowerCase()) {
       case "delete":
         fs.delete(file, true);
         break;
       case "move":
-        Path tagetFileMovePath = new Path(targetFolder + file.getName());
-        fs.rename(file, tagetFileMovePath);
+        Path targetFileMovePath = new Path(targetFolder, file.getName());
+        fs.rename(file, targetFileMovePath);
         break;
       case "archive":
-        FileOutputStream archivedStream = new FileOutputStream(targetFolder + file.getName() + ".zip");
-        ZipOutputStream zipArchivedStream = new ZipOutputStream(archivedStream);
-        FSDataInputStream fdDataInputStream = null;
-        try {
-          fdDataInputStream = fs.open(file);
-          zipArchivedStream.putNextEntry(new ZipEntry(file.getName()));
-          int length;
-          byte[] buffer = new byte[1024];
-          while ((length = fdDataInputStream.read(buffer)) > 0) {
-            zipArchivedStream.write(buffer, 0, length);
-          }
-        } catch (IOException ioException) {
-          throw ioException;
-        } finally {
-          if (zipArchivedStream != null) {
-            zipArchivedStream.closeEntry();
-          }
-          fdDataInputStream.close();
-          zipArchivedStream.close();
-        }
-        fs.delete(file, true);
+        Path targetPath = new Path(targetFolder, file.getName() + ".zip");
+        FileUtililty.archiveFile(fs, file, targetPath, true);
         break;
       default:
         LOG.warn("No action required on the file.");
@@ -288,24 +243,18 @@ public class XMLRecordReader extends RecordReader<LongWritable, Map<String, Stri
    * @throws IOException - IO Exception occurred while writing data to temp file.
    */
   private void updateFileTrackingInfo() throws IOException {
-    //TODO - remove temp file usage after proper solution to send data back to XMLReaderBatchSource.
-    File tempFile = new File(tempFilePath);
-    if (!tempFile.exists()) {
-      tempFile.createNewFile();
+    try (FSDataOutputStream outputStream = fs.create(new Path(tempFilePath, file.getName() + ".txt"))) {
+      outputStream.writeUTF(fileName);
     }
-    FileWriter fw = new FileWriter(tempFile.getAbsoluteFile(), true);
-    BufferedWriter bw = new BufferedWriter(fw);
-    bw.write(fileName + "\n");
-    bw.close();
   }
 
   /**
    * Class to publish input stream and get total bytes read.
    */
-  public class PublishingInputStream extends FilterInputStream {
+  public class TrackingInputStream extends FilterInputStream {
     private long totalBytes = 0;
 
-    public PublishingInputStream(InputStream in) {
+    public TrackingInputStream(InputStream in) {
       super(in);
     }
 

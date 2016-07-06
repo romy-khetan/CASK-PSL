@@ -1,0 +1,23 @@
+{
+  "config": {
+    "cdap_auto": {
+      "git": {
+        "local_user": "root",
+        "repos": {
+          "cask-tracker": {
+            "branch": "develop"
+          },
+          "cdap-navigator": {
+            "branch": "develop"
+          },
+          "hydrator-plugins": {
+            "branch": "develop"
+          }
+        },
+        "hydrator_plugins": {
+          "branch": "develop"
+        }
+      }
+    }
+  }
+}

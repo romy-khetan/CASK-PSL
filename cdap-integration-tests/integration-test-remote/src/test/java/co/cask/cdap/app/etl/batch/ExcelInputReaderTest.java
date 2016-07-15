@@ -31,7 +31,6 @@ import co.cask.cdap.etl.common.Plugin;
 import co.cask.cdap.etl.proto.v2.ETLBatchConfig;
 import co.cask.cdap.etl.proto.v2.ETLPlugin;
 import co.cask.cdap.etl.proto.v2.ETLStage;
-import co.cask.cdap.proto.Id;
 import co.cask.cdap.proto.artifact.AppRequest;
 import co.cask.cdap.proto.id.ApplicationId;
 import co.cask.cdap.proto.id.NamespaceId;
@@ -75,30 +74,29 @@ public class ExcelInputReaderTest extends ETLTestBase {
     serviceURL = serviceManager.getServiceURL();
 
     URL url = new URL(serviceURL, "excelreader/create");
-    //POST request to create a new file set with name xmlreadersource.
+    //POST request to create a new file set with name excelreadersource.
     HttpResponse response = getRestClient().execute(HttpMethod.POST, url, getClientConfig().getAccessToken());
     Assert.assertEquals(HttpURLConnection.HTTP_OK, response.getResponseCode());
 
     url = new URL(serviceURL, "excelreader?path=civil_test_data_one.xlsx");
-    //PUT request to upload the catalog.xml file, sent in the request body
+    //PUT request to upload the civil_test_data_one.xlsx file, sent in the request body
     getRestClient().execute(HttpRequest.put(url).withBody(new File("src/test/resources/civil_test_data_one.xlsx"))
                               .build(), getClientConfig().getAccessToken(), HttpURLConnection.HTTP_OK);
 
     url = new URL(serviceURL, "excelreader?path=civil_test_data_two.xlsx");
-    //PUT request to upload the catalogProcessedFile.xml file, sent in the request body
+    //PUT request to upload the civil_test_data_two.xlsx file, sent in the request body
     getRestClient().execute(HttpRequest.put(url).withBody(new File("src/test/resources/civil_test_data_two.xlsx"))
                               .build(), getClientConfig().getAccessToken(), HttpURLConnection.HTTP_OK);
 
-    URL serviceUrl = new URL(serviceURL, "excelreader?path");
+    URL pathServiceUrl = new URL(serviceURL, "excelreader?path");
     AccessToken accessToken = getClientConfig().getAccessToken();
-    HttpResponse sourceResponse = getRestClient().execute(HttpMethod.GET, serviceUrl, accessToken);
+    HttpResponse sourceResponse = getRestClient().execute(HttpMethod.GET, pathServiceUrl, accessToken);
     Assert.assertEquals(HttpURLConnection.HTTP_OK, sourceResponse.getResponseCode());
     sourcePath = sourceResponse.getResponseBodyAsString();
   }
 
   @Test
   public void testExcelReader() throws Exception {
-
     Map<String, String> sourceProperties = new ImmutableMap.Builder<String, String>()
       .put(Constants.Reference.REFERENCE_NAME, "TestCase1-testExcelInputReader")
       .put("filePath", sourcePath)
@@ -119,25 +117,21 @@ public class ExcelInputReaderTest extends ETLTestBase {
       .put(Properties.BatchReadableWritable.NAME, "input")
       .build();
 
-    Schema schema = Schema.recordOf(
-      "record",
-      Schema.Field.of("A", Schema.of(Schema.Type.STRING)),
-      Schema.Field.of("B", Schema.of(Schema.Type.STRING)),
-      Schema.Field.of("file", Schema.of(Schema.Type.STRING)),
-      Schema.Field.of("sheet", Schema.of(Schema.Type.STRING)));
+    Schema schema = Schema.recordOf("record", Schema.Field.of("A", Schema.of(Schema.Type.STRING)),
+                                    Schema.Field.of("B", Schema.of(Schema.Type.STRING)),
+                                    Schema.Field.of("file", Schema.of(Schema.Type.STRING)),
+                                    Schema.Field.of("sheet", Schema.of(Schema.Type.STRING)));
 
-    ETLStage source = new ETLStage("Excel",
-                                   new ETLPlugin("Excel", BatchSource.PLUGIN_TYPE, sourceProperties, null));
+    ETLStage source = new ETLStage("Excel", new ETLPlugin("Excel", BatchSource.PLUGIN_TYPE, sourceProperties, null));
 
-    String outputDatasetName = "output-batchsourcetest";
-    ETLStage transform =
-      new ETLStage("ProjectionTransform2", new ETLPlugin("Projection", Transform.PLUGIN_TYPE,
-                                                         ImmutableMap.of("schema", schema.toString()), null));
-    ETLStage sink =
-      new ETLStage("TableSink", new ETLPlugin("Table", BatchSink.PLUGIN_TYPE, ImmutableMap.of(
-        Properties.BatchReadableWritable.NAME, outputDatasetName,
-        Properties.Table.PROPERTY_SCHEMA_ROW_FIELD, "A",
-        Properties.Table.PROPERTY_SCHEMA, schema.toString()), null));
+    String outputDatasetName = "output-batchsourcetest-excelreader";
+    ETLStage transform = new ETLStage("transform", new ETLPlugin("Projection", Transform.PLUGIN_TYPE,
+                                              ImmutableMap.of("schema", schema.toString()), null));
+
+    ETLStage sink = new ETLStage("TableSink", new ETLPlugin("Table", BatchSink.PLUGIN_TYPE, ImmutableMap.of(
+      Properties.BatchReadableWritable.NAME, outputDatasetName,
+      Properties.Table.PROPERTY_SCHEMA_ROW_FIELD, "A",
+      Properties.Table.PROPERTY_SCHEMA, schema.toString()), null));
 
     ETLBatchConfig config = ETLBatchConfig.builder("* * * * *")
       .addStage(source)
@@ -148,8 +142,8 @@ public class ExcelInputReaderTest extends ETLTestBase {
       .build();
 
     AppRequest<ETLBatchConfig> appRequest = getBatchAppRequestV2(config);
-    Id.Application appId = Id.Application.from(Id.Namespace.DEFAULT, "ExcelReaderTest");
-    ApplicationManager appManager = deployApplication(appId, appRequest);
+    ApplicationId appId = NamespaceId.DEFAULT.app("ExcelReaderTest");
+    ApplicationManager appManager = deployApplication(appId.toId(), appRequest);
 
     // manually trigger the pipeline
     WorkflowManager workflowManager = appManager.getWorkflowManager(SmartWorkflow.NAME);
@@ -166,14 +160,13 @@ public class ExcelInputReaderTest extends ETLTestBase {
 
   @Test
   public void testTerminateOnEmptyRow() throws Exception {
-
     Map<String, String> sourceProperties = new ImmutableMap.Builder<String, String>()
-      .put(Constants.Reference.REFERENCE_NAME, "TestCase")
+      .put(Constants.Reference.REFERENCE_NAME, "TestCase-TerminateOnEmptyRow")
       .put("filePath", sourcePath)
       .put("filePattern", ".*")
       .put("sheet", "Sheet Name")
       .put("sheetValue", "Sheet1")
-      .put("memoryTableName", "trackMemoryTableWithTerminateOnEmptyRow")
+      .put("memoryTableName", "trackmemorytablewithterminateonemptyrow")
       .put("tableExpiryPeriod", "30")
       .put("reprocess", "false")
       .put("columnList", "")
@@ -187,36 +180,31 @@ public class ExcelInputReaderTest extends ETLTestBase {
       .put(Properties.BatchReadableWritable.NAME, "input")
       .build();
 
-
-    Schema schema = Schema.recordOf(
-      "record",
-      Schema.Field.of("A", Schema.of(Schema.Type.STRING)),
-      Schema.Field.of("B", Schema.of(Schema.Type.STRING)),
-      Schema.Field.of("file", Schema.of(Schema.Type.STRING)),
-      Schema.Field.of("sheet", Schema.of(Schema.Type.STRING)));
+    Schema schema = Schema.recordOf("record", Schema.Field.of("A", Schema.of(Schema.Type.STRING)),
+                                    Schema.Field.of("B", Schema.of(Schema.Type.STRING)),
+                                    Schema.Field.of("file", Schema.of(Schema.Type.STRING)),
+                                    Schema.Field.of("sheet", Schema.of(Schema.Type.STRING)));
 
     co.cask.cdap.etl.common.ETLStage source =
       new co.cask.cdap.etl.common.ETLStage("Excel", new Plugin("Excel", sourceProperties, null));
 
-    String outputDatasetName = "output-batchsourcetest-TerminateOnEmptyRow";
+    String outputDatasetName = "output-batchsourcetest-terminateonemptyrow";
 
+    Map<String, String> transformProperties = ImmutableMap.of(Properties.Table.PROPERTY_SCHEMA, schema.toString());
     co.cask.cdap.etl.common.ETLStage transform =
-      new co.cask.cdap.etl.common.ETLStage("transform",
-                                           new Plugin("Projection", ImmutableMap.of(Properties.Table.PROPERTY_SCHEMA,
-                                                                                    schema.toString()), null));
+      new co.cask.cdap.etl.common.ETLStage("transform", new Plugin("Projection", transformProperties, null));
 
+    Map<String, String> sinkProperties = ImmutableMap.of(Properties.BatchReadableWritable.NAME, outputDatasetName,
+                                                         Properties.Table.PROPERTY_SCHEMA_ROW_FIELD, "A",
+                                                         Properties.Table.PROPERTY_SCHEMA, schema.toString());
     co.cask.cdap.etl.common.ETLStage sink =
-      new co.cask.cdap.etl.common.ETLStage("TableSink",
-                                           new Plugin("Table", ImmutableMap.of(
-                                             Properties.BatchReadableWritable.NAME, outputDatasetName,
-                                             Properties.Table.PROPERTY_SCHEMA_ROW_FIELD, "A",
-                                             Properties.Table.PROPERTY_SCHEMA, schema.toString()), null));
+      new co.cask.cdap.etl.common.ETLStage("TableSink", new Plugin("Table", sinkProperties, null));
 
     co.cask.cdap.etl.batch.config.ETLBatchConfig etlBatchConfig =
       new co.cask.cdap.etl.batch.config.ETLBatchConfig("* * * * *", source, sink, Lists.newArrayList(transform));
 
     AppRequest<co.cask.cdap.etl.batch.config.ETLBatchConfig> request = getBatchAppRequest(etlBatchConfig);
-    ApplicationId appId = NamespaceId.DEFAULT.app("ExcelReaderTest");
+    ApplicationId appId = NamespaceId.DEFAULT.app("ExcelReaderTest-terminateonemptyrow");
     ApplicationManager appManager = deployApplication(appId.toId(), request);
 
     MapReduceManager mrManager = appManager.getMapReduceManager(ETLMapReduce.NAME);
@@ -233,7 +221,7 @@ public class ExcelInputReaderTest extends ETLTestBase {
       .put("filePattern", ".*")
       .put("sheet", "Sheet Name")
       .put("sheetValue", "Sheet1")
-      .put("memoryTableName", "trackMemoryTableWithTerminateOnErrorRecord")
+      .put("memoryTableName", "tracktemorytablewithterminateonerrorrecord")
       .put("tableExpiryPeriod", "30")
       .put("reprocess", "false")
       .put("columnList", "")
@@ -247,33 +235,32 @@ public class ExcelInputReaderTest extends ETLTestBase {
       .put(Properties.BatchReadableWritable.NAME, "input")
       .build();
 
-    Schema schema = Schema.recordOf(
-      "record",
-      Schema.Field.of("A", Schema.of(Schema.Type.STRING)),
-      Schema.Field.of("B", Schema.of(Schema.Type.LONG)),
-      Schema.Field.of("file", Schema.of(Schema.Type.STRING)),
-      Schema.Field.of("sheet", Schema.of(Schema.Type.STRING)));
+    Schema schema = Schema.recordOf("record", Schema.Field.of("A", Schema.of(Schema.Type.STRING)),
+                                    Schema.Field.of("B", Schema.of(Schema.Type.LONG)),
+                                    Schema.Field.of("file", Schema.of(Schema.Type.STRING)),
+                                    Schema.Field.of("sheet", Schema.of(Schema.Type.STRING)));
 
     co.cask.cdap.etl.common.ETLStage source = new
       co.cask.cdap.etl.common.ETLStage("Excel", new Plugin("Excel", sourceProperties, null));
 
-    String outputDatasetName = "output-batchsourcetest-TerminateOnErrorRecord";
+    String outputDatasetName = "output-batchsourcetest-terminateonerrorrecord";
 
+    Map<String, String> transformProperties = ImmutableMap.of(Properties.Table.PROPERTY_SCHEMA, schema.toString());
     co.cask.cdap.etl.common.ETLStage transform =
-      new co.cask.cdap.etl.common.ETLStage("transform",
-                                           new Plugin("Projection", ImmutableMap.of(Properties.Table.PROPERTY_SCHEMA,
-                                                                                    schema.toString()), null));
+      new co.cask.cdap.etl.common.ETLStage("transform", new Plugin("Projection", transformProperties, null));
+
+    Map<String, String> sinkProperties = ImmutableMap.of(Properties.BatchReadableWritable.NAME, outputDatasetName,
+                                                         Properties.Table.PROPERTY_SCHEMA_ROW_FIELD, "A",
+                                                         Properties.Table.PROPERTY_SCHEMA, schema.toString());
+
     co.cask.cdap.etl.common.ETLStage sink =
-      new co.cask.cdap.etl.common.ETLStage("TableSink", new Plugin("Table", ImmutableMap.of(
-        Properties.BatchReadableWritable.NAME, outputDatasetName,
-        Properties.Table.PROPERTY_SCHEMA_ROW_FIELD, "A",
-        Properties.Table.PROPERTY_SCHEMA, schema.toString()), null));
+      new co.cask.cdap.etl.common.ETLStage("TableSink", new Plugin("Table", sinkProperties, null));
 
     co.cask.cdap.etl.batch.config.ETLBatchConfig etlBatchConfig =
       new co.cask.cdap.etl.batch.config.ETLBatchConfig("* * * * *", source, sink, Lists.newArrayList(transform));
 
     AppRequest<co.cask.cdap.etl.batch.config.ETLBatchConfig> request = getBatchAppRequest(etlBatchConfig);
-    ApplicationId appId = NamespaceId.DEFAULT.app("ExcelReaderTest");
+    ApplicationId appId = NamespaceId.DEFAULT.app("ExcelReaderTest-terminateonerrorrecord");
     ApplicationManager appManager = deployApplication(appId.toId(), request);
 
     MapReduceManager mrManager = appManager.getMapReduceManager(ETLMapReduce.NAME);
@@ -283,14 +270,14 @@ public class ExcelInputReaderTest extends ETLTestBase {
   }
 
   @Test
-  public void testExcelReaderTest() throws Exception {
+  public void testExcelReaderReprocessFalse() throws Exception {
     Map<String, String> sourceProperties = new ImmutableMap.Builder<String, String>()
-      .put(Constants.Reference.REFERENCE_NAME, "TestCase1-testExcelReaderTest")
+      .put(Constants.Reference.REFERENCE_NAME, "TestCase1-testExcelReaderReprocessFalse")
       .put("filePath", sourcePath)
       .put("filePattern", ".*")
       .put("sheet", "Sheet Name")
       .put("sheetValue", "Sheet1")
-      .put("memoryTableName", "trackMemoryTable1")
+      .put("memoryTableName", "trackmemorytablereprocessfalse")
       .put("tableExpiryPeriod", "30")
       .put("reprocess", "false")
       .put("columnList", "")
@@ -311,16 +298,15 @@ public class ExcelInputReaderTest extends ETLTestBase {
       Schema.Field.of("file", Schema.of(Schema.Type.STRING)),
       Schema.Field.of("sheet", Schema.of(Schema.Type.STRING)));
 
-    ETLStage source = new ETLStage("Excel",
-                                   new ETLPlugin("Excel", BatchSource.PLUGIN_TYPE, sourceProperties, null));
+    ETLStage source = new ETLStage("Excel", new ETLPlugin("Excel", BatchSource.PLUGIN_TYPE, sourceProperties, null));
 
-    String outputDatasetName = "output-batchsourcetest-testExcelReaderTest";
+    String outputDatasetName = "output-batchsourcetest-testexcelreaderreprocessfalse";
+
     ETLStage transform =
       new ETLStage("ProjectionTransform2", new ETLPlugin("Projection", Transform.PLUGIN_TYPE,
                                                          ImmutableMap.of("schema", schema.toString()), null));
-    ETLStage sink =
-      new ETLStage("TableSink", new ETLPlugin("Table", BatchSink.PLUGIN_TYPE,
-                                              ImmutableMap.of(
+
+    ETLStage sink = new ETLStage("TableSink", new ETLPlugin("Table", BatchSink.PLUGIN_TYPE, ImmutableMap.of(
                                                 Properties.BatchReadableWritable.NAME, outputDatasetName,
                                                 Properties.Table.PROPERTY_SCHEMA_ROW_FIELD, "A",
                                                 Properties.Table.PROPERTY_SCHEMA, schema.toString()), null));
@@ -334,10 +320,11 @@ public class ExcelInputReaderTest extends ETLTestBase {
       .build();
 
     AppRequest<ETLBatchConfig> appRequest = getBatchAppRequestV2(config);
-    Id.Application appId = Id.Application.from(Id.Namespace.DEFAULT, "ExcelReaderTest");
-    ApplicationManager appManager = deployApplication(appId, appRequest);
+    ApplicationId appId = NamespaceId.DEFAULT.app("ExcelReaderreprocessfalse");
+    ApplicationManager appManager = deployApplication(appId.toId(), appRequest);
 
-    DataSetManager<KeyValueTable> dataSetManager = getKVTableDataset("trackMemoryTable1");
+    // Set preprocessed file data
+    DataSetManager<KeyValueTable> dataSetManager = getKVTableDataset("trackmemorytablereprocessfalse");
     KeyValueTable keyValueTable = dataSetManager.get();
     String excelTestFileTwo = "civil_test_data_two.xlsx";
     File testFile = new File(sourcePath , excelTestFileTwo);

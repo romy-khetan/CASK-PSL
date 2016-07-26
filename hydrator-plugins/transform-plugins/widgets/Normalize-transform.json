@@ -1,0 +1,29 @@
+{
+  "metadata": {
+    "spec-version": "1.0"
+  },
+  "configuration-groups": [
+    {
+      "properties": [
+        {
+          "widget-type": "keyvalue",
+          "label": "Field Mapping",
+          "name": "fieldMapping",
+          "widget-attributes": {
+            "showDelimiter": "false"
+          }
+        },
+	    {
+          "widget-type": "ds-multiplevalues",
+          "label": "Field Normalizing",
+          "name": "fieldNormalizing",
+          "widget-attributes": {
+            "numValues": "3",
+            "placeholders": ["Input Field", "Attribute Type", "Attribute Value"]
+          }
+        }
+      ]
+    }
+  ],
+  "outputs": [ ]
+}

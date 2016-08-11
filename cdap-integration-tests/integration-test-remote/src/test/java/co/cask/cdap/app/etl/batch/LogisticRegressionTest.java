@@ -16,14 +16,20 @@
 
 package co.cask.cdap.app.etl.batch;
 
+import co.cask.cdap.api.Resources;
+import co.cask.cdap.api.data.schema.Schema;
 import co.cask.cdap.app.etl.ETLTestBase;
+import co.cask.cdap.client.QueryClient;
 import co.cask.cdap.datapipeline.SmartWorkflow;
 import co.cask.cdap.etl.api.Transform;
+import co.cask.cdap.etl.api.batch.BatchSink;
 import co.cask.cdap.etl.api.batch.BatchSource;
+import co.cask.cdap.etl.api.batch.SparkCompute;
 import co.cask.cdap.etl.api.batch.SparkSink;
 import co.cask.cdap.etl.proto.v2.ETLBatchConfig;
 import co.cask.cdap.etl.proto.v2.ETLPlugin;
 import co.cask.cdap.etl.proto.v2.ETLStage;
+import co.cask.cdap.explore.client.ExploreExecutionResult;
 import co.cask.cdap.proto.Id;
 import co.cask.cdap.proto.artifact.AppRequest;
 import co.cask.cdap.test.ApplicationManager;
@@ -37,11 +43,15 @@ import co.cask.cdap.test.suite.category.HDP21Incompatible;
 import co.cask.cdap.test.suite.category.MapR5Incompatible;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import org.junit.Assert;
 import org.junit.Test;
 import org.junit.experimental.categories.Category;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -64,6 +74,8 @@ public class LogisticRegressionTest extends ETLTestBase {
   public void testSparkPlugins() throws Exception {
     // use the SparkSink to train a logistic regression model
     testSparkSink();
+    // use a SparkCompute to classify all records going through the pipeline, using the model build with the SparkSink
+    testSparkCompute();
   }
 
   private void testSparkSink() throws Exception {
@@ -95,18 +107,18 @@ public class LogisticRegressionTest extends ETLTestBase {
                                                    "predictionField",
                                                    LogisticRegressionSpamMessage.SPAM_PREDICTION_FIELD,
                                                    "numClasses", "2");
+    ETLPlugin sparkPlugin = new ETLPlugin("LogisticRegressionTrainer", SparkSink.PLUGIN_TYPE, sinkProp, null);
 
     ETLBatchConfig etlConfig = ETLBatchConfig.builder("* * * * *")
       .addStage(new ETLStage("source", new ETLPlugin("Stream", BatchSource.PLUGIN_TYPE, sourceProp, null)))
       .addStage(new ETLStage("eventParser", new ETLPlugin("JavaScript", Transform.PLUGIN_TYPE, transformProp, null)))
-      .addStage(new ETLStage("customSink",
-                             new ETLPlugin("LogisticRegressionTrainer", SparkSink.PLUGIN_TYPE, sinkProp, null)))
+      .addStage(new ETLStage("customSink", sparkPlugin))
       .addConnection("source", "eventParser")
       .addConnection("eventParser", "customSink")
       .build();
 
     AppRequest<ETLBatchConfig> request = getBatchAppRequestV2(etlConfig);
-    Id.Application appId = Id.Application.from(TEST_NAMESPACE, "LogicalRegressionSpamTrainer");
+    Id.Application appId = Id.Application.from(TEST_NAMESPACE, "LogisticRegressionSpamTrainer");
     ApplicationManager appManager = deployApplication(appId, request);
 
     // set up five spam messages and five non-spam messages to be used for classification
@@ -133,5 +145,99 @@ public class LogisticRegressionTest extends ETLTestBase {
     WorkflowManager workflowManager = appManager.getWorkflowManager(SmartWorkflow.NAME);
     workflowManager.start();
     workflowManager.waitForFinish(10, TimeUnit.MINUTES);
+  }
+
+  private void testSparkCompute() throws Exception {
+    /**
+     * stream --> transform --> sparkcompute --> tpfssink
+     */
+    String textsToClassify = "textsToClassify";
+
+    String script = "function transform(input, emitter, context) {" +
+      "  parts = input.body.split(',');" +
+      "  text = parts[0];" +
+      "  input.boolField = parts[1];" +
+      "  emitter.emit(input);" +
+      "}";
+
+    Schema simpleMessageSchema =
+      Schema.recordOf("simpleMessage",
+                      Schema.Field.of(LogisticRegressionSpamMessage.TEXT_FIELD, Schema.of(Schema.Type.STRING)),
+                      Schema.Field.of(LogisticRegressionSpamMessage.READ_FIELD, Schema.of(Schema.Type.STRING)));
+
+    Map<String, String> sourceProp = ImmutableMap.of("name", textsToClassify,
+                                                     "duration", "1d",
+                                                     "format", "csv",
+                                                     "schema", simpleMessageSchema.toString());
+
+    Map<String, String> transformProp = ImmutableMap.of("script", script,
+                                                        "schema", LogisticRegressionSpamMessage.SCHEMA.toString());
+
+    String fieldsToClassify = LogisticRegressionSpamMessage.TEXT_FIELD + "," + LogisticRegressionSpamMessage.READ_FIELD;
+    ETLPlugin transformPlugin = new ETLPlugin("JavaScript", Transform.PLUGIN_TYPE, transformProp, null);
+
+    Map<String, String> sparkProp = ImmutableMap.of("fileSetName", "modelFileSet",
+                                                    "path", "output",
+                                                    "fieldsToClassify", fieldsToClassify,
+                                                    "predictionField",
+                                                    LogisticRegressionSpamMessage.SPAM_PREDICTION_FIELD);
+
+    ETLPlugin sparkPlugin = new ETLPlugin("LogisticRegressionClassifier", SparkCompute.PLUGIN_TYPE, sparkProp, null);
+
+    Map<String, String> sinkProp = ImmutableMap.of("name", "classifiedTexts",
+                                                   "schema", LogisticRegressionSpamMessage.SCHEMA.toString());
+
+    ETLPlugin sinkPlugin = new ETLPlugin("TPFSParquet", BatchSink.PLUGIN_TYPE, sinkProp, null);
+
+    ETLBatchConfig etlConfig = ETLBatchConfig.builder("* * * * *")
+      .addStage(new ETLStage("source", new ETLPlugin("Stream", BatchSource.PLUGIN_TYPE, sourceProp, null)))
+      .addStage(new ETLStage("eventParser", transformPlugin))
+      .addStage(new ETLStage("sparkCompute", sparkPlugin))
+      .addStage(new ETLStage("sink", sinkPlugin))
+      .addConnection("source", "eventParser")
+      .addConnection("eventParser", "sparkCompute")
+      .addConnection("sparkCompute", "sink")
+      .setDriverResources(new Resources(1024))
+      .setResources(new Resources(1024))
+      .build();
+
+    Id.Application app = Id.Application.from(Id.Namespace.DEFAULT, "SpamClassifier");
+    ApplicationManager appManager = deployApplication(app, getBatchAppRequestV2(etlConfig));
+
+    // write some some messages to be classified
+    StreamManager streamManager =
+      getTestManager().getStreamManager(Id.Stream.from(Id.Namespace.DEFAULT, textsToClassify));
+    streamManager.send("how are you doing today");
+    streamManager.send("free money money");
+    streamManager.send("what are you doing today");
+    streamManager.send("genuine report");
+
+    // manually trigger the pipeline
+    WorkflowManager workflowManager = appManager.getWorkflowManager(SmartWorkflow.NAME);
+    workflowManager.start();
+    workflowManager.waitForFinish(10, TimeUnit.MINUTES);
+
+    Set<LogisticRegressionSpamMessage> expected = new HashSet<>();
+    expected.add(new LogisticRegressionSpamMessage("how are you doing today", "no", 0.0));
+    // only 'free money money' should be predicated as spam
+    expected.add(new LogisticRegressionSpamMessage("free money money", "yes", 1.0));
+    expected.add(new LogisticRegressionSpamMessage("what are you doing today", "no", 0.0));
+    expected.add(new LogisticRegressionSpamMessage("genuine report", "no", 0.0));
+
+    Assert.assertEquals(expected, getClassifiedMessages());
+  }
+
+  private Set<LogisticRegressionSpamMessage> getClassifiedMessages() throws ExecutionException, InterruptedException {
+    QueryClient queryClient = new QueryClient(getClientConfig());
+    ExploreExecutionResult exploreExecutionResult =
+      queryClient.execute(TEST_NAMESPACE, "SELECT * FROM dataset_classifiedTexts").get();
+
+    Set<LogisticRegressionSpamMessage> classifiedMessages = new HashSet<>();
+    while (exploreExecutionResult.hasNext()) {
+      List<Object> columns = exploreExecutionResult.next().getColumns();
+      classifiedMessages.add(
+        new LogisticRegressionSpamMessage((String) columns.get(1), (String) columns.get(2), (double) columns.get(0)));
+    }
+    return classifiedMessages;
   }
 }

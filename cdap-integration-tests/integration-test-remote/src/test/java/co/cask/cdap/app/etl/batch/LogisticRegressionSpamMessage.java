@@ -16,6 +16,7 @@
 
 package co.cask.cdap.app.etl.batch;
 
+import co.cask.cdap.api.data.format.StructuredRecord;
 import co.cask.cdap.api.data.schema.Schema;
 
 import javax.annotation.Nullable;
@@ -39,13 +40,33 @@ public class LogisticRegressionSpamMessage {
   @Nullable
   private final Double spamPrediction;
 
+  public LogisticRegressionSpamMessage(String text, String read) {
+    this(text, read, null);
+  }
+
   public LogisticRegressionSpamMessage(String text, String read, @Nullable Double spamPrediction) {
     this.text = text;
     this.read = read;
     this.spamPrediction = spamPrediction;
   }
 
-  @Override
+  public StructuredRecord toStructuredRecord() {
+    StructuredRecord.Builder builder = StructuredRecord.builder(SCHEMA);
+    builder.set(TEXT_FIELD, text);
+    builder.set(READ_FIELD, read);
+    if (spamPrediction != null) {
+      builder.set(SPAM_PREDICTION_FIELD, spamPrediction);
+    }
+    return builder.build();
+  }
+
+  public static LogisticRegressionSpamMessage fromStructuredRecord(StructuredRecord structuredRecord) {
+    return new LogisticRegressionSpamMessage((String) structuredRecord.get(TEXT_FIELD),
+                                                  (String) structuredRecord.get(READ_FIELD),
+                                                  (Double) structuredRecord.get(SPAM_PREDICTION_FIELD));
+  }
+
+/*  @Override
   public boolean equals(Object o) {
     if (this == o) {
       return true;
@@ -67,5 +88,33 @@ public class LogisticRegressionSpamMessage {
     int result = text.hashCode();
     result = 31 * result + (spamPrediction != null ? spamPrediction.hashCode() : 0);
     return result;
+  }*/
+
+  @Override
+  public int hashCode() {
+    int result = text.hashCode();
+    result = 31 * result + read.hashCode();
+    result = 31 * result + spamPrediction.hashCode();
+    return result;
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+
+    LogisticRegressionSpamMessage that = (LogisticRegressionSpamMessage) o;
+
+    if (!text.equals(that.text)) {
+      return false;
+    }
+    if (!read.equals(that.read)) {
+      return false;
+    }
+    return spamPrediction.equals(that.spamPrediction);
   }
 }

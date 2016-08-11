@@ -23,9 +23,11 @@ import co.cask.cdap.app.etl.batch.BatchCubeSinkTest;
 import co.cask.cdap.app.etl.batch.CopybookReaderTest;
 import co.cask.cdap.app.etl.batch.ETLMapReduceTest;
 import co.cask.cdap.app.etl.batch.ExcelInputReaderTest;
+import co.cask.cdap.app.etl.batch.LogisticRegressionTest;
 import co.cask.cdap.app.etl.batch.RowDenormalizerTest;
 import co.cask.cdap.app.etl.batch.SparkPluginsTest;
 import co.cask.cdap.app.etl.batch.ValueMapperTest;
+import co.cask.cdap.app.etl.batch.XMLReaderTest;
 import co.cask.cdap.app.etl.realtime.ETLWorkerTest;
 import co.cask.cdap.app.etl.realtime.RealtimeCubeSinkTest;
 import co.cask.cdap.apps.ApplicationTest;
@@ -57,13 +59,14 @@ import org.junit.runners.Suite;
   BatchAggregatorTest.class,
   BatchCubeSinkTest.class,
   CopybookReaderTest.class,
-  ExcelInputReaderTest.class,
   DatasetTest.class,
   ETLMapReduceTest.class,
   ETLWorkerTest.class,
+  ExcelInputReaderTest.class,
   ExploreTest.class,
   FileSetTest.class,
   KVTableWithProjectionTest.class,
+  LogisticRegressionTest.class,
   NamespacedStreamTest.class,
   NamespaceTest.class,
   PurchaseAudiTest.class,
@@ -81,7 +84,8 @@ import org.junit.runners.Suite;
   StreamTPFSWithProjectionTest.class,
   ValueMapperTest.class,
   WordCountTest.class,
-  WorkflowTest.class
+  WorkflowTest.class,
+  XMLReaderTest.class
 })
 public class AllTests {
 }

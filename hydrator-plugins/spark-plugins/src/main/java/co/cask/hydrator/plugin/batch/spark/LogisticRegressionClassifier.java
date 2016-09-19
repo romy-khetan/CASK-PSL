@@ -14,7 +14,7 @@
  * the License.
  */
 
-package co.cask.hydrator.plugin.batch.spark;
+package co.cask.hydrator.plugin.spark;
 
 import co.cask.cdap.api.annotation.Description;
 import co.cask.cdap.api.annotation.Name;
@@ -35,13 +35,11 @@ import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.api.java.function.Function;
 import org.apache.spark.mllib.classification.LogisticRegressionModel;
 import org.apache.spark.mllib.feature.HashingTF;
-import org.apache.spark.mllib.linalg.Vector;
 import org.apache.twill.filesystem.Location;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import javax.ws.rs.Path;
 
 /**
@@ -49,13 +47,19 @@ import javax.ws.rs.Path;
  */
 @Plugin(type = SparkCompute.PLUGIN_TYPE)
 @Name(LogisticRegressionClassifier.PLUGIN_NAME)
-@Description("Uses a trained Logistic Regression model to classify records.")
+@Description("Uses a Logistic Regression model to classify records.")
 public class LogisticRegressionClassifier extends SparkCompute<StructuredRecord, StructuredRecord> {
 
   public static final String PLUGIN_NAME = "LogisticRegressionClassifier";
-
-  private Config config;
+  private final Config config;
   private Schema outputSchema;
+
+  private LogisticRegressionModel loadedModel = null;
+  private HashingTF tf = null;
+
+  public LogisticRegressionClassifier(Config config) {
+    this.config = config;
+  }
 
   /**
    * Configuration for the LogisticRegressionClassifier.
@@ -63,30 +67,45 @@ public class LogisticRegressionClassifier extends SparkCompute<StructuredRecord,
   public static class Config extends PluginConfig {
 
     @Description("The name of the FileSet to load the model from.")
-    private final String fileSetName;
+    private String fileSetName;
 
     @Description("Path of the FileSet to load the model from.")
-    private final String path;
+    private String path;
 
-    @Description("A space-separated sequence of words to classify.")
-    private final String fieldsToClassify;
+    @Nullable
+    @Description("A comma-separated sequence of fields that needs to be used for classification.")
+    private String featureFieldsToInclude;
+
+    @Nullable
+    @Description("A comma-separated sequence of fields that needs to be excluded from being used in classification.")
+    private String featureFieldsToExclude;
 
     @Description("The field on which to set the prediction. It will be of type double.")
-    private final String predictionField;
+    private String predictionField;
 
     @Nullable
     @Description("The number of features to use in training the model. It must be of type integer and equal to the" +
-                  " number of features used in LogisticRegressionTrainer. The default value if none is provided " +
-                  " will be 100.")
-    private final Integer numFeatures;
+      " number of features used in LogisticRegressionTrainer. The default value if none is provided " +
+      " will be 100.")
+    private Integer numFeatures;
 
-    public Config(String fileSetName, String path, String fieldsToClassify, String predictionField,
-                  Integer numFeatures) {
+    public Config() {
+      this.numFeatures = 100;
+    }
+
+    public Config(String fileSetName, String path, String featureFieldsToInclude, String featureFieldsToExclude,
+                  String predictionField, Integer numFeatures) {
       this.fileSetName = fileSetName;
       this.path = path;
-      this.fieldsToClassify = fieldsToClassify;
+      this.featureFieldsToInclude = featureFieldsToInclude;
+      this.featureFieldsToExclude = featureFieldsToExclude;
       this.predictionField = predictionField;
       this.numFeatures = numFeatures;
+    }
+
+    private void validateSchema(Schema inputSchema) {
+      Schema.Field predictionField = inputSchema.getField(this.predictionField);
+      Preconditions.checkArgument(predictionField == null, "Prediction field must not already exist in input schema.");
     }
   }
 
@@ -94,28 +113,18 @@ public class LogisticRegressionClassifier extends SparkCompute<StructuredRecord,
   public void configurePipeline(PipelineConfigurer pipelineConfigurer) throws IllegalArgumentException {
     StageConfigurer stageConfigurer = pipelineConfigurer.getStageConfigurer();
     Schema inputSchema = stageConfigurer.getInputSchema();
-    // if null, the input schema is unknown, or its multiple schemas.
-    if (inputSchema == null) {
-      outputSchema = null;
-      stageConfigurer.setOutputSchema(null);
-      return;
-    }
-    validateSchema(inputSchema);
+
+    Preconditions.checkArgument(inputSchema != null, "Input Schema must be a known constant.");
+    config.validateSchema(inputSchema);
 
     // otherwise, we have a constant input schema. Get the input schema and
     // add a field to it, on which the prediction will be set
-    outputSchema = getOutputSchema(inputSchema);
+    outputSchema = SparkUtils.getOutputSchema(inputSchema, config.predictionField);
     stageConfigurer.setOutputSchema(outputSchema);
   }
 
-  private void validateSchema(Schema inputSchema) {
-    Schema.Field predictionField = inputSchema.getField(config.predictionField);
-    Preconditions.checkArgument(predictionField == null, "Prediction field must not already exist in input schema.");
-  }
-
   @Override
-  public JavaRDD<StructuredRecord> transform(SparkExecutionPluginContext context,
-                                             JavaRDD<StructuredRecord> input) throws Exception {
+  public void initialize(SparkExecutionPluginContext context) throws Exception {
     FileSet fileSet = context.getDataset(config.fileSetName);
     Location modelLocation = fileSet.getBaseLocation().append(config.path);
     if (!modelLocation.exists()) {
@@ -126,53 +135,51 @@ public class LogisticRegressionClassifier extends SparkCompute<StructuredRecord,
     // load the model from a file in the model fileset
     JavaSparkContext javaSparkContext = context.getSparkContext();
     SparkContext sparkContext = JavaSparkContext.toSparkContext(javaSparkContext);
+
     String modelPath = modelLocation.toURI().getPath();
-    final LogisticRegressionModel loadedModel = LogisticRegressionModel.load(sparkContext, modelPath);
+    loadedModel = LogisticRegressionModel.load(sparkContext, modelPath);
+    tf = new HashingTF((config.numFeatures));
+  }
 
-    final HashingTF tf = new HashingTF((config.numFeatures == null) ? 100 : config.numFeatures);
-    final String[] columns = config.fieldsToClassify.split(",");
-    JavaRDD<StructuredRecord> output = input.map(new Function<StructuredRecord, StructuredRecord>() {
-      @Override
-      public StructuredRecord call(StructuredRecord structuredRecord) throws Exception {
-        List<String> result = new ArrayList<>();
-        for (String column : columns) {
-          result.add(String.valueOf(structuredRecord.get(column)));
+  @Override
+  public JavaRDD<StructuredRecord> transform(SparkExecutionPluginContext context,
+                                             JavaRDD<StructuredRecord> input) throws Exception {
+    if (!input.isEmpty()) {
+      final Schema inputSchema = input.first().getSchema();
+      final Map<String, Integer> featuresList = SparkUtils.getFeatureList(inputSchema,
+                                                                          config.featureFieldsToInclude,
+                                                                          config.featureFieldsToExclude,
+                                                                          config.predictionField);
+
+      final JavaRDD<StructuredRecord> output = input.map(new Function<StructuredRecord, StructuredRecord>() {
+        @Override
+        public StructuredRecord call(StructuredRecord structuredRecord) throws Exception {
+          List<Object> result = new ArrayList<>();
+          for (String column : featuresList.keySet()) {
+            if (inputSchema.getField(column).getSchema().getType() != Schema.Type.DOUBLE) {
+              result.add(String.valueOf(structuredRecord.get(column)));
+            } else {
+              result.add(structuredRecord.get(column));
+            }
+          }
+          double prediction = loadedModel.predict(tf.transform(result));
+
+          if (outputSchema == null) {
+            outputSchema = SparkUtils.getOutputSchema(inputSchema, config.predictionField);
+          }
+
+          return SparkUtils.cloneRecord(structuredRecord, outputSchema, config.predictionField).
+            set(config.predictionField, prediction).build();
         }
-        Vector vector = tf.transform(result);
-        double prediction = loadedModel.predict(vector);
-        return cloneRecord(structuredRecord).set(config.predictionField, prediction).build();
-      }
-    });
-    return output;
-  }
-
-  // creates a builder based off the given record
-  private StructuredRecord.Builder cloneRecord(StructuredRecord record) {
-    Schema schemaToUse = outputSchema != null ? outputSchema : getOutputSchema(record.getSchema());
-    StructuredRecord.Builder builder = StructuredRecord.builder(schemaToUse);
-    for (Schema.Field field : schemaToUse.getFields()) {
-      if (!config.predictionField.equals(field.getName())) {
-        builder.set(field.getName(), record.get(field.getName()));
-        /*// don't copy the field to set from the input record; it will be set later
-        continue;*/
-      }
+      });
+      return output;
     }
-    return builder;
-  }
-
-  private Schema getOutputSchema(Schema inputSchema) {
-    return getOutputSchema(inputSchema, config.predictionField);
-  }
-
-  private Schema getOutputSchema(Schema inputSchema, String predictionField) {
-    List<Schema.Field> fields = new ArrayList<>(inputSchema.getFields());
-    fields.add(Schema.Field.of(predictionField, Schema.of(Schema.Type.DOUBLE)));
-    return Schema.recordOf(inputSchema.getRecordName() + ".predicted", fields);
+    return null;
   }
 
   @Path("outputSchema")
   public Schema getOutputSchema(GetSchemaRequest request) {
-    return getOutputSchema(request.inputSchema, request.predictionField);
+    return SparkUtils.getOutputSchema(request.inputSchema, request.predictionField);
   }
 
   /**

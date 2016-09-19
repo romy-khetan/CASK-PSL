@@ -15,13 +15,21 @@ Properties
 
 **path:** Path of the FileSet to load the model from.
 
-**fieldsToClassify:** A space-separated sequence of fields to use for classification.
+**featureFieldsToInclude:** A comma-separated sequence of fields that needs to be used for training.
 
-**predictionField:** The field on which to set the prediction. It will be of type double.
+**featureFieldsToExclude:** A comma-separated sequence of fields that needs to be excluded from being used in training.
+
+**predictionField:** The field on which prediction needs to be set. It will be of type double.
 
 **numFeatures:** The number of features to use when classifying with the trained model. This should be the same as
 the number of features used to train the model in LogisticRegressionTrainer. The default value if none is provided
 will be 100.
+
+Condition
+---------
+1. Both *featureFieldsToInclude* and *featureFieldsToExclude* fields cannot be specified simultaneously.
+2. If inputs for *featureFieldsToInclude* and *featureFieldsToExclude* has not been provided then all the fields except
+predictionField field will be used as feature fields.
 
 
 Example
@@ -35,7 +43,7 @@ on to the ``isSpam`` field.
         "properties": {
             "fileSetName": "modelFileSet",
             "path": "output",
-            "fieldToClassify": "text,imp",
+            "featureFieldsToInclude": "text,imp",
             "predictionField": "isSpam",
             "numFeatures": "100"
         }

@@ -21,7 +21,9 @@ import co.cask.cdap.api.data.schema.Schema;
 import co.cask.cdap.api.dataset.table.Table;
 import co.cask.cdap.datapipeline.DataPipelineApp;
 import co.cask.cdap.datapipeline.SmartWorkflow;
+import co.cask.cdap.etl.api.batch.SparkCompute;
 import co.cask.cdap.etl.api.batch.SparkSink;
+import co.cask.cdap.etl.mock.batch.MockSink;
 import co.cask.cdap.etl.mock.batch.MockSource;
 import co.cask.cdap.etl.mock.test.HydratorTestBase;
 import co.cask.cdap.etl.proto.v2.ETLBatchConfig;
@@ -37,11 +39,13 @@ import co.cask.cdap.test.ApplicationManager;
 import co.cask.cdap.test.DataSetManager;
 import co.cask.cdap.test.TestConfiguration;
 import co.cask.cdap.test.WorkflowManager;
+import co.cask.hydrator.plugin.spark.GDTreeClassifier;
 import co.cask.hydrator.plugin.spark.GDTreeTrainer;
 import co.cask.hydrator.plugin.spark.TwitterStreamingSource;
 import com.google.common.collect.ImmutableMap;
 import org.apache.commons.io.FileUtils;
 import org.junit.AfterClass;
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
@@ -54,8 +58,10 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 public class GDTreeTest extends HydratorTestBase {
@@ -67,6 +73,8 @@ public class GDTreeTest extends HydratorTestBase {
 
   protected static final ArtifactId DATAPIPELINE_ARTIFACT_ID = NamespaceId.DEFAULT.artifact("data-pipeline", "3.5.0");
   protected static final ArtifactSummary DATAPIPELINE_ARTIFACT = new ArtifactSummary("data-pipeline", "3.5.0");
+
+  private static final String LABELED_RECORDS = "labeledRecords";
 
   private final Schema schema =
     Schema.recordOf("flightData", Schema.Field.of("dofM", Schema.nullableOf(Schema.of(Schema.Type.INT))),
@@ -116,6 +124,8 @@ public class GDTreeTest extends HydratorTestBase {
   public void testSparkSinkAndCompute() throws Exception {
     // use the SparkSink(GDTreeTrainer) to train a model
     testSinglePhaseWithSparkSink();
+    // use the SparkCompute(GDTreeClassifier) to classify the records
+    testSinglePhaseWithSparkCompute();
   }
 
   private void testSinglePhaseWithSparkSink() throws Exception {
@@ -185,5 +195,76 @@ public class GDTreeTest extends HydratorTestBase {
     List<Schema.Field> fields = new ArrayList<>(schema.getFields());
     fields.add(Schema.Field.of("delayed", Schema.nullableOf(Schema.of(Schema.Type.DOUBLE))));
     return Schema.recordOf(schema.getRecordName() + ".predicted", fields);
+  }
+
+  private void testSinglePhaseWithSparkCompute() throws Exception {
+    String inputTable = "spark-compute";
+    /*
+     * source --> sparkcompute --> sink
+     */
+    ETLPlugin classifierPlugin =  new ETLPlugin(GDTreeClassifier.PLUGIN_NAME, SparkCompute.PLUGIN_TYPE,
+                                                ImmutableMap.of("fileSetName", "gd-tree-model",
+                                                "path", "output",
+                                                "featuresToExclude", "tailNum,flightNum,origin,dest," +
+                                                "deptime,depDelayMins,arrTime,arrDelay,distance",
+                                                "predictionField", "delayed"), null);
+    ETLBatchConfig etlConfig = ETLBatchConfig.builder("* * * * *")
+      .addStage(new ETLStage("source", MockSource.getPlugin(inputTable, schema)))
+      .addStage(new ETLStage("sparkcompute", classifierPlugin))
+      .addStage(new ETLStage("sink", MockSink.getPlugin(LABELED_RECORDS)))
+      .addConnection("source", "sparkcompute")
+      .addConnection("sparkcompute", "sink")
+      .build();
+
+    AppRequest<ETLBatchConfig> appRequest = new AppRequest<>(DATAPIPELINE_ARTIFACT, etlConfig);
+    ApplicationId appId = NamespaceId.DEFAULT.app("SinglePhaseApp");
+    ApplicationManager appManager = deployApplication(appId.toId(), appRequest);
+
+    // Flight records to be labeled.
+    List<StructuredRecord> messagesToWrite = new ArrayList<>();
+    messagesToWrite.add(new Flight(4, 6, 1.0, "N327AA", 1, 12478, "JFK", 12892, "LAX", 900, 1005.0, 65.0,
+                                   1225.0, 1324.0, 59.0, 385.0, 2475).toStructuredRecord());
+    messagesToWrite.add(new Flight(25, 6, 2.0, "N0EGMQ", 3419, 10397, "ATL", 12953, "LGA", 1150, 1229.0, 39.0,
+                                   1359.0, 1448.0, 49.0, 129.0, 762).toStructuredRecord());
+    messagesToWrite.add(new Flight(4, 6, 3.0, "N14991", 6159, 13930, "ORD", 13198, "MCI", 2030, 2118.0, 48.0,
+                                   2205.0, 2321.0, 76.0, 95.0, 403).toStructuredRecord());
+    messagesToWrite.add(new Flight(29, 3, 1.0, "N355AA", 2407, 12892, "LAX", 11298, "DFW", 1025, 1023.0, 0.0,
+                                   1530.0, 1523.0, 0.0, 185.0, 1235).toStructuredRecord());
+    messagesToWrite.add(new Flight(2, 4, 4.0, "N919DE", 1908, 13930, "ORD", 11433, "DTW", 1641, 1902.0, 141.0,
+                                   1905.0, 2117.0, 132.0, 84.0, 235).toStructuredRecord());
+    messagesToWrite.add(new Flight(2, 4, 4.0, "N933DN", 1791, 10397, "ATL", 15376, "TUS", 1855, 2014.0, 79.0,
+                                   2108.0, 2159.0, 51.0, 253.0, 1541).toStructuredRecord());
+
+    DataSetManager<Table> inputManager = getDataset(Id.Namespace.DEFAULT, inputTable);
+    MockSource.writeInput(inputManager, messagesToWrite);
+
+    // manually trigger the pipeline
+    WorkflowManager workflowManager = appManager.getWorkflowManager(SmartWorkflow.NAME);
+    workflowManager.start();
+    workflowManager.waitForFinish(5, TimeUnit.MINUTES);
+
+    DataSetManager<Table> labeledTexts = getDataset(LABELED_RECORDS);
+    List<StructuredRecord> structuredRecords = MockSink.readOutput(labeledTexts);
+
+    Set<Flight> expected = new HashSet<>();
+    expected.add(new Flight(4, 6, 1.0, "N327AA", 1, 12478, "JFK", 12892, "LAX", 900, 1005.0, 65.0,
+                                   1225.0, 1324.0, 59.0, 385.0, 2475, 1.0));
+    expected.add(new Flight(25, 6, 2.0, "N0EGMQ", 3419, 10397, "ATL", 12953, "LGA", 1150, 1229.0, 39.0,
+                                   1359.0, 1448.0, 49.0, 129.0, 762, 0.0));
+    expected.add(new Flight(4, 6, 3.0, "N14991", 6159, 13930, "ORD", 13198, "MCI", 2030, 2118.0, 48.0,
+                                   2205.0, 2321.0, 76.0, 95.0, 403, 1.0));
+    expected.add(new Flight(29, 3, 1.0, "N355AA", 2407, 12892, "LAX", 11298, "DFW", 1025, 1023.0, 0.0,
+                                   1530.0, 1523.0, 0.0, 185.0, 1235, 0.0));
+    expected.add(new Flight(2, 4, 4.0, "N919DE", 1908, 13930, "ORD", 11433, "DTW", 1641, 1902.0, 141.0,
+                                   1905.0, 2117.0, 132.0, 84.0, 235, 1.0));
+    expected.add(new Flight(2, 4, 4.0, "N933DN", 1791, 10397, "ATL", 15376, "TUS", 1855, 2014.0, 79.0,
+                                   2108.0, 2159.0, 51.0, 253.0, 1541, 1.0));
+
+    Set<Flight> results = new HashSet<>();
+    for (StructuredRecord structuredRecord : structuredRecords) {
+      results.add(Flight.fromStructuredRecord(structuredRecord));
+    }
+
+    Assert.assertEquals(expected, results);
   }
 }

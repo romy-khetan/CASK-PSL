@@ -53,16 +53,13 @@ import javax.annotation.Nullable;
 public class GDTreeClassifier extends SparkCompute<StructuredRecord, StructuredRecord> {
 
   public static final String PLUGIN_NAME = "GDTreeClassifier";
-
   private final Config config;
   private Schema outputSchema;
-
   private GradientBoostedTreesModel loadedModel = null;
 
   public GDTreeClassifier(Config config) {
     this.config = config;
   }
-
   /**
    * Configuration for the GDTreeClassifier.
    */
@@ -85,9 +82,8 @@ public class GDTreeClassifier extends SparkCompute<StructuredRecord, StructuredR
     @Description("The field on which prediction needs to be set. It must be of type double")
     private final String predictionField;
 
-
-    public Config(String fileSetName, String path, String featuresToInclude, String featuresToExclude,
-                  String predictionField) {
+    public Config(String fileSetName, String path, @Nullable String featuresToInclude,
+                  @Nullable String featuresToExclude, String predictionField) {
       this.fileSetName = fileSetName;
       this.path = path;
       this.featuresToInclude = featuresToInclude;
@@ -107,10 +103,8 @@ public class GDTreeClassifier extends SparkCompute<StructuredRecord, StructuredR
   public void configurePipeline(PipelineConfigurer pipelineConfigurer) throws IllegalArgumentException {
     StageConfigurer stageConfigurer = pipelineConfigurer.getStageConfigurer();
     Schema inputSchema = stageConfigurer.getInputSchema();
+    Preconditions.checkArgument(inputSchema != null, "Input Schema must be a known constant.");
     config.validate(inputSchema);
-
-    // otherwise, we have a constant input schema. Get the input schema and
-    // add a field to it, on which the prediction will be set
     stageConfigurer.setOutputSchema(SparkUtils.getOutputSchema(inputSchema, config.predictionField));
   }
 
@@ -133,7 +127,7 @@ public class GDTreeClassifier extends SparkCompute<StructuredRecord, StructuredR
   public JavaRDD<StructuredRecord> transform(SparkExecutionPluginContext context,
                                              JavaRDD<StructuredRecord> input) throws Exception {
     if (input == null) {
-      throw new IllegalArgumentException("Input java rdd is null");
+      throw new IllegalArgumentException("Input java rdd is null.");
     }
     final Schema inputSchema = input.first().getSchema();
     final Map<String, Integer> fields = SparkUtils.getFeatureList(inputSchema, config.featuresToInclude,

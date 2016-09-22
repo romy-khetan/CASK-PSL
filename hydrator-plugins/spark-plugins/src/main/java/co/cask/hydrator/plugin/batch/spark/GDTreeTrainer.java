@@ -50,7 +50,7 @@ import javax.annotation.Nullable;
  */
 @Plugin(type = SparkSink.PLUGIN_TYPE)
 @Name(GDTreeTrainer.PLUGIN_NAME)
-@Description("Uses GD Tree to train a model based upon whether messages are spam or not.")
+@Description("Uses GD-Tree to train a model based upon whether messages are spam or not.")
 public class GDTreeTrainer extends SparkSink<StructuredRecord> {
 
   public static final String PLUGIN_NAME = "GDTreeTrainer";
@@ -107,9 +107,9 @@ public class GDTreeTrainer extends SparkSink<StructuredRecord> {
       this.maxIteration = 10;
     }
 
-    public Config(String fileSetName, String path, String featuresToInclude, String featuresToExclude,
-                  String labelField, String cardinalityMapping, Integer maxDepth, Integer maxClass,
-                  Integer maxIteration) {
+    public Config(String fileSetName, String path, @Nullable String featuresToInclude,
+                  @Nullable String featuresToExclude, String labelField, @Nullable String cardinalityMapping,
+                  @Nullable Integer maxDepth, @Nullable Integer maxClass, @Nullable Integer maxIteration) {
       this.fileSetName = fileSetName;
       this.path = path;
       this.cardinalityMapping = cardinalityMapping;
@@ -144,7 +144,7 @@ public class GDTreeTrainer extends SparkSink<StructuredRecord> {
   @Override
   public void run(SparkExecutionPluginContext context, final JavaRDD<StructuredRecord> input) throws Exception {
     if (input == null) {
-      throw new IllegalArgumentException("Input java rdd is null");
+      throw new IllegalArgumentException("Input java rdd is null.");
     }
     Schema schema = input.first().getSchema();
     final Map<String, Integer> fields = SparkUtils.getFeatureList(schema, config.featuresToInclude,

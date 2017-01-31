@@ -1,0 +1,50 @@
+{
+  "metadata": {
+    "spec-version": "1.3"
+  },
+  "configuration-groups": [
+    {
+      "label": "Sampling Plugin",
+      "properties": [
+        {
+          "widget-type": "textbox",
+          "label": "Sample Size",
+          "name": "sampleSize"
+        },
+        {
+          "widget-type": "textbox",
+          "label": "Sample Percentage",
+          "name": "samplePercentage"
+        },
+        {
+          "widget-type": "select",
+          "label": "Sampling Type",
+          "name": "samplingType",
+          "widget-attributes": {
+            "values": [
+              "Systematic",
+              "Reservoir"
+            ],
+            "default": "Systematic"
+          }
+        },
+        {
+          "widget-type": "textbox",
+          "label": "Over Sampling Percentage",
+          "name": "overSamplingPercentage"
+        },
+        {
+          "widget-type": "textbox",
+          "label": "Random",
+          "name": "random"
+        },
+        {
+          "widget-type": "textbox",
+          "label": "Total Records",
+          "name": "totalRecords"
+        }
+      ]
+    }
+  ],
+  "outputs": []
+}
